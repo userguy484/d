@@ -30,13 +30,11 @@ void RegisterAPI(lua_State* L) {
 }
 
 void ExecuteScript(lua_State* L, const std::string& script) {
-    // 1. Compile the text into Luau bytecode
-    size_t bytecodeSize = 0;
-    char* bytecode = luau_compile(script.c_str(), script.length(), NULL, &bytecodeSize);
+    // 1. Compile the text into Luau bytecode using the C++ API
+    std::string bytecode = Luau::compile(script);
     
     // 2. Load the bytecode into the VM
-    int status = luau_load(L, "ExecutorScript", bytecode, bytecodeSize, 0);
-    free(bytecode);
+    int status = luau_load(L, "ExecutorScript", bytecode.c_str(), bytecode.length(), 0);
     
     if (status != LUA_OK) {
         std::cout << "[Lua Load Error] " << lua_tostring(L, -1) << std::endl;
