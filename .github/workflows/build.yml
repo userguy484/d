@@ -18,26 +18,21 @@ jobs:
         arch: x64
         
     - name: Clone and Build Luau
+      shell: bash
       run: |
         git clone --depth 1 https://github.com/luau-lang/luau.git
         cd luau
-        cmake -B build -DCMAKE_BUILD_TYPE=Release -DLUAU_BUILD_TESTS=OFF
+        # Force CMake to put ALL library files into one folder in the root
+        cmake -B build -DCMAKE_BUILD_TYPE=Release -DLUAU_BUILD_TESTS=OFF -DCMAKE_ARCHIVE_OUTPUT_DIRECTORY="$(pwd)/../libs"
         cmake --build build --config Release
-        
-    - name: Gather Libraries
-      shell: cmd
-      run: |
-        mkdir libs
-        for /r luau %%f in (*.lib) do copy "%%f" libs\
-        echo "=== LIBS FOLDER CONTENTS ==="
-        dir libs
         
     - name: Compile dd.cpp to DLL
       shell: cmd
       run: |
-        cl /EHsc /O2 /MD /std:c++17 /LD dd.cpp /Fe:dd.dll /Iluau\VM\include /Iluau\Compiler\include /Iluau\Common\include /Iluau\Ast\include /Iluau\Config\include /link /LIBPATH:libs Luau.Compiler.lib Luau.Ast.lib Luau.Common.lib Luau.Config.lib Luau.VM.lib Luau.Config.lib Luau.Common.lib user32.lib msvcrt.lib
+        cl /EHsc /O2 /MD /std:c++17 /LD dd.cpp /Fe:dd.dll /Iluau\VM\include /Iluau\Compiler\include /Iluau\Common\include /Iluau\Ast\include /Iluau\Config\include /link /LIBPATH:libs /WHOLEARCHIVE:Luau.Compiler.lib /WHOLEARCHIVE:Luau.Ast.lib /WHOLEARCHIVE:Luau.Common.lib /WHOLEARCHIVE:Luau.Config.lib /WHOLEARCHIVE:Luau.VM.lib user32.lib msvcrt.lib
         
     - name: Compile injector.cpp to EXE
+      shell: cmd
       run: |
         cl /EHsc /O2 injector.cpp /Fe:injector.exe user32.lib
         
