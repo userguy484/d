@@ -41,7 +41,7 @@ void RegisterAPI(lua_State* L) {
 // The main execution function
 void ExecuteScript(lua_State* L, const std::string& script) {
     // 1. Load the script into the VM
-    int status = luaL_loadbuffer(L, script.c_str(), script.length(), "ExecutorScript");
+        int status = luau_load(L, "ExecutorScript", script.c_str(), script.length(), 0);
     if (status != LUA_OK) {
         std::cout << "[Lua Load Error] " << lua_tostring(L, -1) << std::endl;
         lua_pop(L, 1);
