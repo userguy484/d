@@ -1,13 +1,24 @@
-name: Build EXE
+name: Build Roblox Executor DLL
+
 on: [push, workflow_dispatch]
+
 jobs:
   build:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ilammy/msvc-dev-cmd@v1
-      - run: cl /EHsc /O2 main.cpp /Fe:app.exe
-      - uses: actions/upload-artifact@v4
+      
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
         with:
-          name: compiled-app
-          path: app.exe
+          arch: x64
+          
+      - name: Compile dd.cpp to DLL
+        # /LD tells MSVC to make a DLL, /O2 optimizes it
+        run: cl /EHsc /O2 /LD dd.cpp /Fe:dd.dll /link user32.lib
+        
+      - name: Upload DLL Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Compiled-DLL
+          path: dd.dll
