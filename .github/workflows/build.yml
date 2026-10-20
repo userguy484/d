@@ -26,8 +26,7 @@ jobs:
         
     - name: Compile dd.cpp to DLL
       run: |
-        dir luau\VM\include
-        cl /EHsc /O2 /LD dd.cpp /Fe:dd.dll /Iluau\VM\include /Iluau\Common\include /link /LIBPATH:luau\build\Release Luau.VM.lib user32.lib
+        cl /EHsc /O2 /MD /LD dd.cpp /Fe:dd.dll /Iluau\VM\include /Iluau\Common\include /link /LIBPATH:luau\build\VM\Release /LIBPATH:luau\build\Release Luau.VM.lib user32.lib msvcrt.lib
       
     - name: Upload DLL Artifact
       uses: actions/upload-artifact@v4
