@@ -1,4 +1,4 @@
-name: Build Roblox Executor DLL
+name: Build Executor with Luau
 
 on: 
   push:
@@ -9,7 +9,7 @@ jobs:
     runs-on: windows-latest
     
     steps:
-    - name: Checkout Code
+    - name: Checkout User Code
       uses: actions/checkout@v4
       
     - name: Setup MSVC
@@ -17,12 +17,19 @@ jobs:
       with:
         arch: x64
         
-    - name: Compile dd.cpp and stub.cpp to DLL
-      run: cl /EHsc /O2 /LD dd.cpp stub.cpp /Fe:dd.dll /link user32.lib
+    - name: Clone and Build Luau
+      run: |
+        git clone --depth 1 https://github.com/luau-lang/luau.git
+        cd luau
+        cmake -B build -DCMAKE_BUILD_TYPE=Release -DLUAU_BUILD_TESTS=OFF
+        cmake --build build --config Release --target Luau.VM
+        
+    - name: Compile dd.cpp to DLL
+      run: cl /EHsc /O2 /LD dd.cpp /Fe:dd.dll /I luau/VM/include /I luau/Common/include /link /LIBPATH:luau/build/Release Luau.VM.lib user32.lib
       
     - name: Upload DLL Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: Compiled-DLL
+        name: Real-Luau-Executor
         path: dd.dll
         retention-days: 7
