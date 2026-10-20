@@ -25,7 +25,7 @@ jobs:
         cmake --build build --config Release --target Luau.VM
         
     - name: Compile dd.cpp to DLL
-      run: cl /EHsc /O2 /LD dd.cpp /Fe:dd.dll /I luau/VM/include /I luau/Common/include /link /LIBPATH:luau/build/Release Luau.VM.lib user32.lib
+      run: cl /EHsc /O2 /LD dd.cpp /Fe:dd.dll /I"luau\VM\include" /I"luau\Common\include" /link /LIBPATH:"luau\build\Release" Luau.VM.lib user32.lib
       
     - name: Upload DLL Artifact
       uses: actions/upload-artifact@v4
