@@ -14,26 +14,20 @@ static int custom_httpget(lua_State* L) {
     return 1; 
 }
 
-static int get_game(lua_State* L) {
-    lua_newtable(L); 
-    lua_pushstring(L, "Fake Roblox Game Instance");
-    lua_setfield(L, -2, "Name");
-    return 1;
-}
-
 void RegisterAPI(lua_State* L) {
+    // Register HttpGet
     lua_pushcfunction(L, custom_httpget, "HttpGet");
     lua_setglobal(L, "HttpGet");
 
-    lua_pushcfunction(L, get_game, "game");
+    // Create the 'game' table directly instead of a function
+    lua_newtable(L); 
+    lua_pushstring(L, "Fake Roblox Game Instance");
+    lua_setfield(L, -2, "Name");
     lua_setglobal(L, "game");
 }
 
 void ExecuteScript(lua_State* L, const std::string& script) {
-    // 1. Compile the text into Luau bytecode using the C++ API
     std::string bytecode = Luau::compile(script);
-    
-    // 2. Load the bytecode into the VM
     int status = luau_load(L, "ExecutorScript", bytecode.c_str(), bytecode.length(), 0);
     
     if (status != LUA_OK) {
@@ -44,7 +38,6 @@ void ExecuteScript(lua_State* L, const std::string& script) {
 
     RegisterAPI(L);
 
-    // 3. Run it
     status = lua_pcall(L, 0, LUA_MULTRET, 0);
     if (status != LUA_OK) {
         std::cout << "[Lua Runtime Error] " << lua_tostring(L, -1) << std::endl;
