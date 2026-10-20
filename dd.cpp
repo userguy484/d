@@ -5,8 +5,8 @@
 
 #include "lua.h"
 #include "lualib.h"
+#include "Luau/Compiler.h"
 
-// Custom function: HttpGet("url")
 static int custom_httpget(lua_State* L) {
     const char* url = lua_tostring(L, 1);
     std::string response = "Downloaded data from: " + std::string(url ? url : "unknown");
@@ -14,7 +14,6 @@ static int custom_httpget(lua_State* L) {
     return 1; 
 }
 
-// Custom property: game
 static int get_game(lua_State* L) {
     lua_newtable(L); 
     lua_pushstring(L, "Fake Roblox Game Instance");
@@ -22,7 +21,6 @@ static int get_game(lua_State* L) {
     return 1;
 }
 
-// Inject the API into the Luau environment
 void RegisterAPI(lua_State* L) {
     lua_pushcfunction(L, custom_httpget, "HttpGet");
     lua_setglobal(L, "HttpGet");
@@ -31,10 +29,15 @@ void RegisterAPI(lua_State* L) {
     lua_setglobal(L, "game");
 }
 
-// Execute the Lua script
 void ExecuteScript(lua_State* L, const std::string& script) {
-    // Luau's native load function
-    int status = luau_load(L, "ExecutorScript", script.c_str(), script.length(), 0);
+    // 1. Compile the text into Luau bytecode
+    size_t bytecodeSize = 0;
+    char* bytecode = luau_compile(script.c_str(), script.length(), NULL, &bytecodeSize);
+    
+    // 2. Load the bytecode into the VM
+    int status = luau_load(L, "ExecutorScript", bytecode, bytecodeSize, 0);
+    free(bytecode);
+    
     if (status != LUA_OK) {
         std::cout << "[Lua Load Error] " << lua_tostring(L, -1) << std::endl;
         lua_pop(L, 1);
@@ -43,7 +46,7 @@ void ExecuteScript(lua_State* L, const std::string& script) {
 
     RegisterAPI(L);
 
-    // Run the script
+    // 3. Run it
     status = lua_pcall(L, 0, LUA_MULTRET, 0);
     if (status != LUA_OK) {
         std::cout << "[Lua Runtime Error] " << lua_tostring(L, -1) << std::endl;
@@ -51,7 +54,6 @@ void ExecuteScript(lua_State* L, const std::string& script) {
     }
 }
 
-// Spawn a console window for output
 void SetupConsole() {
     AllocConsole();
     FILE* f;
@@ -59,7 +61,6 @@ void SetupConsole() {
     freopen_s(&f, "CONIN$", "r", stdin);
 }
 
-// DLL Entry Point
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved) {
     switch (ul_reason_for_call) {
     case DLL_PROCESS_ATTACH:
@@ -69,7 +70,6 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
             SetupConsole();
             std::cout << "[+] Wesoda Internal Executor Initialized.\n";
 
-            // 1. Initialize the real Luau State
             lua_State* L = luaL_newstate();
             if (!L) {
                 std::cout << "[-] Failed to create Luau state.\n";
@@ -78,7 +78,6 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
             
             luaL_openlibs(L);
 
-            // 2. Run a test script
             std::string testScript = 
                 "print('Hello from internal C++ executor!')\n"
                 "local data = HttpGet('https://api.github.com')\n"
