@@ -21,16 +21,12 @@ jobs:
       run: |
         git clone --depth 1 https://github.com/luau-lang/luau.git
         cd luau
-        cmake -B build -DCMAKE_BUILD_TYPE=Release -DLUAU_BUILD_TESTS=OFF
-        cmake --build build --config Release --target Luau.VM
-        cmake --build build --config Release --target Luau.Compiler
-        cmake --build build --config Release --target Luau.Ast
-        cmake --build build --config Release --target Luau.Common
-        cmake --build build --config Release --target Luau.Config
+        cmake -B build -DCMAKE_BUILD_TYPE=Release -DLUAU_BUILD_TESTS=OFF -DCMAKE_ARCHIVE_OUTPUT_DIRECTORY=Release
+        cmake --build build --config Release
         
     - name: Compile dd.cpp to DLL
       run: |
-        cl /EHsc /O2 /MD /std:c++17 /LD dd.cpp /Fe:dd.dll /Iluau\VM\include /Iluau\Compiler\include /Iluau\Common\include /Iluau\Ast\include /Iluau\Config\include /link luau\build\Compiler\Release\Luau.Compiler.lib luau\build\Ast\Release\Luau.Ast.lib luau\build\Common\Release\Luau.Common.lib luau\build\Config\Release\Luau.Config.lib luau\build\VM\Release\Luau.VM.lib luau\build\Config\Release\Luau.Config.lib luau\build\Common\Release\Luau.Common.lib user32.lib msvcrt.lib
+        cl /EHsc /O2 /MD /std:c++17 /LD dd.cpp /Fe:dd.dll /Iluau\VM\include /Iluau\Compiler\include /Iluau\Common\include /Iluau\Ast\include /Iluau\Config\include /link /LIBPATH:luau\build\Release Luau.Compiler.lib Luau.Ast.lib Luau.Common.lib Luau.Config.lib Luau.VM.lib Luau.Config.lib Luau.Common.lib user32.lib msvcrt.lib
         
     - name: Compile injector.cpp to EXE
       run: |
