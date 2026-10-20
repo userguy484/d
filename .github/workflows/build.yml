@@ -23,20 +23,25 @@ jobs:
         git clone --depth 1 https://github.com/luau-lang/luau.git
         cd luau
         cmake -B build -DCMAKE_BUILD_TYPE=Release -DLUAU_BUILD_TESTS=OFF
-        cmake --build build --config Release
+        # Explicitly build all targets to ensure Config is included
+        cmake --build build --config Release --target Luau.Config Luau.Compiler Luau.Ast Luau.Common Luau.VM
         
-    - name: Gather Libraries
-      shell: pwsh
+    - name: Gather and Combine Libraries
+      shell: cmd
       run: |
-        New-Item -ItemType Directory -Force -Path libs
-        Get-ChildItem -Path luau -Filter *.lib -Recurse | Copy-Item -Destination libs
-        Write-Host "=== LIBS IN FOLDER ==="
-        Get-ChildItem libs
+        mkdir libs
+        for /r luau %%f in (*.lib) do copy "%%f" libs\
+        cd libs
+        # Combine all libs into one massive static library
+        lib /OUT:LuauMonolith.lib *.lib
+        cd ..
+        echo "=== COMBINED LIB CREATED ==="
+        dir libs\LuauMonolith.lib
         
     - name: Compile dd.cpp to DLL
       shell: cmd
       run: |
-        cl /EHsc /O2 /MD /std:c++17 /LD dd.cpp /Fe:dd.dll /Iluau\VM\include /Iluau\Compiler\include /Iluau\Common\include /Iluau\Ast\include /Iluau\Config\include /link /LIBPATH:libs /WHOLEARCHIVE:Luau.Compiler.lib /WHOLEARCHIVE:Luau.Ast.lib /WHOLEARCHIVE:Luau.Common.lib /WHOLEARCHIVE:Luau.Config.lib /WHOLEARCHIVE:Luau.VM.lib user32.lib msvcrt.lib
+        cl /EHsc /O2 /MD /std:c++17 /LD dd.cpp /Fe:dd.dll /Iluau\VM\include /Iluau\Compiler\include /Iluau\Common\include /Iluau\Ast\include /Iluau\Config\include /link /LIBPATH:libs LuauMonolith.lib user32.lib msvcrt.lib
         
     - name: Compile injector.cpp to EXE
       shell: cmd
