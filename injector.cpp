@@ -3,7 +3,6 @@
 #include <iostream>
 #include <string>
 
-// Helper to get Process ID
 DWORD GetProcessId(const std::string& processName) {
     PROCESSENTRY32 processInfo;
     processInfo.dwSize = sizeof(processInfo);
@@ -22,12 +21,7 @@ DWORD GetProcessId(const std::string& processName) {
     return 0;
 }
 
-// Manual Mapper (Simplified for demonstration - loads DLL from disk stealthily)
 bool ManualMap(HANDLE hProcess, const char* dllPath) {
-    // For this GitHub build, we use the standard LoadLibrary injection 
-    // but wrapped in a way that bypasses basic CreateRemoteThread checks.
-    // A full PE Manual Mapper requires ~500 lines of code handling relocations.
-    
     char fullPath[MAX_PATH];
     GetFullPathNameA(dllPath, MAX_PATH, fullPath, NULL);
 
@@ -77,10 +71,20 @@ int main() {
     }
     CloseHandle(hProcess);
 
-    // --- GUI / Script Sender ---
+    // --- WAIT FOR DLL TO SETUP PIPE ---
     std::cout << "[*] Connecting to internal pipe...\n";
-    HANDLE hPipe = CreateFileA("\\\\.\\pipe\\WesodaPipe", GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+    HANDLE hPipe = INVALID_HANDLE_VALUE;
+    int retries = 20; // Try for 2 seconds (20 * 100ms)
     
+    while (retries > 0) {
+        hPipe = CreateFileA("\\\\.\\pipe\\WesodaPipe", GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+        if (hPipe != INVALID_HANDLE_VALUE) {
+            break;
+        }
+        Sleep(100); // Wait 100ms before trying again
+        retries--;
+    }
+
     if (hPipe == INVALID_HANDLE_VALUE) {
         std::cout << "[-] Could not connect to pipe. Injection might have failed.\n";
         system("pause");
