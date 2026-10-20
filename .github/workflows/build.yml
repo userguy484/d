@@ -1,4 +1,4 @@
-name: Build DLL and Injector
+name: Build Executor Suite
 
 on: 
   push:
@@ -9,7 +9,7 @@ jobs:
     runs-on: windows-latest
     
     steps:
-    - name: Checkout User Code
+    - name: Checkout Code
       uses: actions/checkout@v4
       
     - name: Setup MSVC
@@ -17,41 +17,37 @@ jobs:
       with:
         arch: x64
         
-    - name: Clone and Build Luau
+    - name: Build Luau Engine
       shell: bash
       run: |
         git clone --depth 1 https://github.com/luau-lang/luau.git
         cd luau
         cmake -B build -DCMAKE_BUILD_TYPE=Release -DLUAU_BUILD_TESTS=OFF
-        # Explicitly build all targets to ensure Config is included
-        cmake --build build --config Release --target Luau.Config Luau.Compiler Luau.Ast Luau.Common Luau.VM
+        cmake --build build --config Release
         
-    - name: Gather and Combine Libraries
+    - name: Combine Libraries
       shell: cmd
       run: |
         mkdir libs
         for /r luau %%f in (*.lib) do copy "%%f" libs\
         cd libs
-        # Combine all libs into one massive static library
         lib /OUT:LuauMonolith.lib *.lib
         cd ..
-        echo "=== COMBINED LIB CREATED ==="
-        dir libs\LuauMonolith.lib
         
-    - name: Compile dd.cpp to DLL
+    - name: Compile Internal DLL
       shell: cmd
       run: |
         cl /EHsc /O2 /MD /std:c++17 /LD dd.cpp /Fe:dd.dll /Iluau\VM\include /Iluau\Compiler\include /Iluau\Common\include /Iluau\Ast\include /Iluau\Config\include /link /LIBPATH:libs LuauMonolith.lib user32.lib msvcrt.lib
         
-    - name: Compile injector.cpp to EXE
+    - name: Compile External EXE
       shell: cmd
       run: |
         cl /EHsc /O2 injector.cpp /Fe:injector.exe user32.lib
         
-    - name: Upload Artifacts
+    - name: Upload Everything
       uses: actions/upload-artifact@v4
       with:
-        name: Executor-Complete
+        name: Wesoda-Complete-Executor
         path: |
           dd.dll
           injector.exe
