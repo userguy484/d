@@ -29,7 +29,7 @@ jobs:
         
     - name: Compile dd.cpp to DLL
       run: |
-        cl /EHsc /O2 /MD /std:c++17 /LD dd.cpp /Fe:dd.dll /Iluau\VM\include /Iluau\Compiler\include /Iluau\Common\include /Iluau\Ast\include /link /LIBPATH:luau\build\VM\Release /LIBPATH:luau\build\Compiler\Release /LIBPATH:luau\build\Ast\Release /LIBPATH:luau\build\Common\Release /LIBPATH:luau\build\Release Luau.Common.lib Luau.Ast.lib Luau.Compiler.lib Luau.VM.lib user32.lib msvcrt.lib
+        cl /EHsc /O2 /MD /std:c++17 /LD dd.cpp /Fe:dd.dll /Iluau\VM\include /Iluau\Compiler\include /Iluau\Common\include /Iluau\Ast\include /link /LIBPATH:luau\build\VM\Release /LIBPATH:luau\build\Compiler\Release /LIBPATH:luau\build\Ast\Release /LIBPATH:luau\build\Common\Release /LIBPATH:luau\build\Release /WHOLEARCHIVE:Luau.Compiler.lib /WHOLEARCHIVE:Luau.Ast.lib /WHOLEARCHIVE:Luau.Common.lib /WHOLEARCHIVE:Luau.VM.lib user32.lib msvcrt.lib
         
     - name: Compile injector.cpp to EXE
       run: |
