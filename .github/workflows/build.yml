@@ -28,7 +28,9 @@ jobs:
       shell: cmd
       run: |
         mkdir libs
-        xcopy /s /y luau\build\*.lib libs\
+        for /r luau %%f in (*.lib) do copy "%%f" libs\
+        echo "=== LIBS FOLDER CONTENTS ==="
+        dir libs
         
     - name: Compile dd.cpp to DLL
       shell: cmd
