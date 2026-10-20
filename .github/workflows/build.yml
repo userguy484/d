@@ -17,24 +17,22 @@ jobs:
       with:
         arch: x64
         
-    # 1. Build the Luau DLL
     - name: Clone and Build Luau
       run: |
         git clone --depth 1 https://github.com/luau-lang/luau.git
         cd luau
         cmake -B build -DCMAKE_BUILD_TYPE=Release -DLUAU_BUILD_TESTS=OFF
         cmake --build build --config Release --target Luau.VM
+        cmake --build build --config Release --target Luau.Compiler
         
     - name: Compile dd.cpp to DLL
       run: |
-        cl /EHsc /O2 /MD /LD dd.cpp /Fe:dd.dll /Iluau\VM\include /Iluau\Common\include /link /LIBPATH:luau\build\VM\Release /LIBPATH:luau\build\Release Luau.VM.lib user32.lib msvcrt.lib
+        cl /EHsc /O2 /MD /LD dd.cpp /Fe:dd.dll /Iluau\VM\include /Iluau\Compiler\include /Iluau\Common\include /link /LIBPATH:luau\build\VM\Release /LIBPATH:luau\build\Compiler\Release /LIBPATH:luau\build\Release Luau.VM.lib Luau.Compiler.lib user32.lib msvcrt.lib
         
-    # 2. Build the Injector EXE
     - name: Compile injector.cpp to EXE
       run: |
         cl /EHsc /O2 injector.cpp /Fe:injector.exe user32.lib
         
-    # 3. Upload both files
     - name: Upload Artifacts
       uses: actions/upload-artifact@v4
       with:
