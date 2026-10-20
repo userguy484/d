@@ -3,55 +3,47 @@
 #include <string>
 #include <vector>
 
-extern "C" {
-    #include "lua.h"
-    #include "lualib.h"
-    
-}
+#include "lua.h"
+#include "lualib.h"
 
-// Define a custom function to expose to Lua (e.g., print or game:HttpGet)
+// Custom function: HttpGet("url")
 static int custom_httpget(lua_State* L) {
-    const char* url = luaL_checkstring(L, 1);
-    std::string response = "Downloaded data from: " + std::string(url); // Replace with actual WinHTTP code
-    
+    const char* url = lua_tostring(L, 1);
+    std::string response = "Downloaded data from: " + std::string(url ? url : "unknown");
     lua_pushstring(L, response.c_str());
-    return 1; // Number of return values
+    return 1; 
 }
 
-// Define a custom function to expose the game global
+// Custom property: game
 static int get_game(lua_State* L) {
-    // In a real executor, this would return the actual Roblox DataModel userdata
-    lua_newtable(L); // Fake game table for demonstration
+    lua_newtable(L); 
     lua_pushstring(L, "Fake Roblox Game Instance");
     lua_setfield(L, -2, "Name");
     return 1;
 }
 
-// Registry to inject functions into the Lua environment
+// Inject the API into the Luau environment
 void RegisterAPI(lua_State* L) {
-    // Register a global function: HttpGet("url")
     lua_pushcfunction(L, custom_httpget, "HttpGet");
     lua_setglobal(L, "HttpGet");
 
-    // Register a global property: game
     lua_pushcfunction(L, get_game, "game");
     lua_setglobal(L, "game");
 }
 
-// The main execution function
+// Execute the Lua script
 void ExecuteScript(lua_State* L, const std::string& script) {
-    // 1. Load the script into the VM
-        int status = luau_load(L, "ExecutorScript", script.c_str(), script.length(), 0);
+    // Luau's native load function
+    int status = luau_load(L, "ExecutorScript", script.c_str(), script.length(), 0);
     if (status != LUA_OK) {
         std::cout << "[Lua Load Error] " << lua_tostring(L, -1) << std::endl;
         lua_pop(L, 1);
         return;
     }
 
-    // 2. Register the custom API functions before running
     RegisterAPI(L);
 
-    // 3. Execute the script via pcall (protected call)
+    // Run the script
     status = lua_pcall(L, 0, LUA_MULTRET, 0);
     if (status != LUA_OK) {
         std::cout << "[Lua Runtime Error] " << lua_tostring(L, -1) << std::endl;
@@ -59,7 +51,7 @@ void ExecuteScript(lua_State* L, const std::string& script) {
     }
 }
 
-// Console allocation for debugging
+// Spawn a console window for output
 void SetupConsole() {
     AllocConsole();
     FILE* f;
@@ -73,22 +65,20 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
     case DLL_PROCESS_ATTACH:
         DisableThreadLibraryCalls(hModule);
         
-        // Run the executor in a separate thread so we don't block Roblox
         CreateThread(nullptr, 0, [](LPVOID) -> DWORD {
             SetupConsole();
             std::cout << "[+] Wesoda Internal Executor Initialized.\n";
 
-            // 1. Initialize Luau State
+            // 1. Initialize the real Luau State
             lua_State* L = luaL_newstate();
             if (!L) {
                 std::cout << "[-] Failed to create Luau state.\n";
                 return 0;
             }
             
-            // Open standard libraries (math, string, table, etc.)
             luaL_openlibs(L);
 
-            // 2. Example: Execute a script automatically on inject
+            // 2. Run a test script
             std::string testScript = 
                 "print('Hello from internal C++ executor!')\n"
                 "local data = HttpGet('https://api.github.com')\n"
