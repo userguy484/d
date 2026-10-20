@@ -1,4 +1,4 @@
-name: Build Executor with Luau
+name: Build DLL and Injector
 
 on: 
   push:
@@ -17,6 +17,7 @@ jobs:
       with:
         arch: x64
         
+    # 1. Build the Luau DLL
     - name: Clone and Build Luau
       run: |
         git clone --depth 1 https://github.com/luau-lang/luau.git
@@ -27,10 +28,18 @@ jobs:
     - name: Compile dd.cpp to DLL
       run: |
         cl /EHsc /O2 /MD /LD dd.cpp /Fe:dd.dll /Iluau\VM\include /Iluau\Common\include /link /LIBPATH:luau\build\VM\Release /LIBPATH:luau\build\Release Luau.VM.lib user32.lib msvcrt.lib
-      
-    - name: Upload DLL Artifact
+        
+    # 2. Build the Injector EXE
+    - name: Compile injector.cpp to EXE
+      run: |
+        cl /EHsc /O2 injector.cpp /Fe:injector.exe user32.lib
+        
+    # 3. Upload both files
+    - name: Upload Artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: Real-Luau-Executor
-        path: dd.dll
+        name: Executor-Complete
+        path: |
+          dd.dll
+          injector.exe
         retention-days: 7
