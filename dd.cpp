@@ -6,7 +6,7 @@
 extern "C" {
     #include "lua.h"
     #include "lualib.h"
-    #include "lauxlib.h"
+    
 }
 
 // Define a custom function to expose to Lua (e.g., print or game:HttpGet)
