@@ -77,7 +77,6 @@ DWORD WINAPI InjectThread(LPVOID lpParam) {
 
     AddLog("[*] Preparing injection...\n");
 
-    // Find current executor folder
     char exePath[MAX_PATH];
     GetModuleFileNameA(NULL, exePath, MAX_PATH);
     std::string exeDir = exePath;
@@ -87,7 +86,6 @@ DWORD WINAPI InjectThread(LPVOID lpParam) {
     GetTempPathA(MAX_PATH, tempPath);
     tempDllPath = std::string(tempPath) + "wesoda_" + std::to_string(GetTickCount()) + ".dll";
     
-    // Copy from the executor folder to temp
     std::string originalDll = exeDir + "\\dd.dll";
     if (!CopyFileA(originalDll.c_str(), tempDllPath.c_str(), FALSE)) {
         AddLog("[-] Failed to copy dd.dll to temp folder. Is it missing?\n");
@@ -181,27 +179,19 @@ LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     return DefWindowProcW(hWnd, msg, wParam, lParam);
 }
 
-// --- CLEANUP LOGIC: MOVES DLL BACK ---
 void CleanupTempDLL() {
     if (tempDllPath.empty()) return;
 
-    // Get the executor's original folder
     char exePath[MAX_PATH];
     GetModuleFileNameA(NULL, exePath, MAX_PATH);
     std::string exeDir = exePath;
     exeDir = exeDir.substr(0, exeDir.find_last_of("\\/"));
     std::string originalDllPath = exeDir + "\\dd.dll";
 
-    // 1. Try to move it back to the executor folder
-    // MOVEFILE_REPLACE_EXISTING overwrites the original dd.dll if it's there
     if (MoveFileExA(tempDllPath.c_str(), originalDllPath.c_str(), MOVEFILE_REPLACE_EXISTING)) {
-        // Successfully moved back!
         return; 
     }
 
-    // 2. If it fails (Error 32: File in use), it means the DLL is still inside Roblox/Notepad.
-    // We CANNOT move it. We rename it to .bak so Windows unlocks it from the path, 
-    // then schedule it to be deleted on your next PC restart.
     std::string bakPath = tempDllPath + ".bak";
     if (MoveFileA(tempDllPath.c_str(), bakPath.c_str())) {
         MoveFileExA(bakPath.c_str(), NULL, MOVEFILE_DELAY_UNTIL_REBOOT);
@@ -277,11 +267,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
         const float clear_color[4] = { 0.1f, 0.1f, 0.1f, 1.0f };
         g_pd3dDeviceContext->OMSetRenderTargets(1, &g_mainRenderTargetView, nullptr);
         g_pd3dDeviceContext->ClearRenderTargetView(g_mainRenderTargetView, clear_color);
-        g_implDX11_RenderDrawData(ImGui::GetDrawData());
+        ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
         g_pSwapChain->Present(1, 0);
     }
 
-    // --- RUN CLEANUP ON EXIT ---
     CleanupTempDLL();
 
     ImGui_ImplDX11_Shutdown(); ImGui_ImplWin32_Shutdown(); ImGui::DestroyContext();
