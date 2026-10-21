@@ -11,22 +11,19 @@
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
 
-// --- ImGui / D3D11 Globals ---
 static ID3D11Device*            g_pd3dDevice = nullptr;
 static ID3D11DeviceContext*     g_pd3dDeviceContext = nullptr;
 static IDXGISwapChain*          g_pSwapChain = nullptr;
 static ID3D11RenderTargetView*  g_mainRenderTargetView = nullptr;
 static bool                     g_Running = true;
 
-// --- Executor Globals ---
-char processName[128] = "RobloxPlayerBeta.exe";
+char processName[128] = "notepad.exe";
 char scriptBuffer[4096] = "print('Hello from ImGui Executor!')\nprint(game.Name)";
 HANDLE hPipe = INVALID_HANDLE_VALUE;
 bool isConnected = false;
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
-// --- Cleanup Function ---
 void CleanupDeviceD3D() {
     if (g_mainRenderTargetView) { g_mainRenderTargetView->Release(); g_mainRenderTargetView = nullptr; }
     if (g_pSwapChain) { g_pSwapChain->Release(); g_pSwapChain = nullptr; }
@@ -34,7 +31,6 @@ void CleanupDeviceD3D() {
     if (g_pd3dDevice) { g_pd3dDevice->Release(); g_pd3dDevice = nullptr; }
 }
 
-// --- Injection Logic ---
 DWORD GetProcessId(const std::string& name) {
     PROCESSENTRY32 pe32; pe32.dwSize = sizeof(pe32);
     HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
@@ -47,19 +43,32 @@ DWORD GetProcessId(const std::string& name) {
 }
 
 void InjectDLL() {
+    isConnected = false; // Reset status on new inject
+    if (hPipe != INVALID_HANDLE_VALUE) { CloseHandle(hPipe); hPipe = INVALID_HANDLE_VALUE; }
+
     DWORD pid = GetProcessId(std::string(processName));
-    if (pid == 0) { MessageBoxA(NULL, "Process not found!", "Error", MB_ICONERROR); return; }
+    if (pid == 0) { MessageBoxA(NULL, "Process not found! Make sure it is open.", "Error", MB_ICONERROR); return; }
 
     HANDLE hProc = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
-    if (!hProc) { MessageBoxA(NULL, "Failed to open process (Run as Admin)", "Error", MB_ICONERROR); return; }
+    if (!hProc) { MessageBoxA(NULL, "Failed to open process. Run as Administrator!", "Error", MB_ICONERROR); return; }
 
     char fullPath[MAX_PATH]; GetFullPathNameA("dd.dll", MAX_PATH, fullPath, NULL);
     void* alloc = VirtualAllocEx(hProc, nullptr, strlen(fullPath) + 1, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!alloc) { MessageBoxA(NULL, "VirtualAllocEx failed.", "Error", MB_ICONERROR); CloseHandle(hProc); return; }
+    
     WriteProcessMemory(hProc, alloc, fullPath, strlen(fullPath) + 1, nullptr);
 
     HMODULE k32 = GetModuleHandleA("kernel32.dll");
     void* loadLib = GetProcAddress(k32, "LoadLibraryA");
     HANDLE hThread = CreateRemoteThread(hProc, nullptr, 0, (LPTHREAD_START_ROUTINE)loadLib, alloc, 0, nullptr);
+    
+    if (hThread == NULL) {
+        char err[256];
+        sprintf_s(err, "CreateRemoteThread failed! Error: %d", GetLastError());
+        MessageBoxA(NULL, err, "Injection Failed", MB_ICONERROR);
+        CloseHandle(hProc);
+        return;
+    }
     
     WaitForSingleObject(hThread, INFINITE);
     CloseHandle(hThread); CloseHandle(hProc);
@@ -70,16 +79,18 @@ void InjectDLL() {
         if (hPipe != INVALID_HANDLE_VALUE) { isConnected = true; break; }
         Sleep(100);
     }
-    if (!isConnected) MessageBoxA(NULL, "Failed to connect to pipe.", "Error", MB_ICONERROR);
+    if (!isConnected) MessageBoxA(NULL, "DLL failed to create Named Pipe. Is the DLL missing dependencies?", "Error", MB_ICONERROR);
 }
 
 void ExecuteScript() {
-    if (!isConnected || hPipe == INVALID_HANDLE_VALUE) return;
+    if (!isConnected || hPipe == INVALID_HANDLE_VALUE) {
+        MessageBoxA(NULL, "Not connected! Click Inject first.", "Error", MB_ICONERROR);
+        return;
+    }
     DWORD written;
     WriteFile(hPipe, scriptBuffer, strlen(scriptBuffer), &written, NULL);
 }
 
-// --- DirectX 11 Setup ---
 void CreateRenderTarget() {
     ID3D11Texture2D* pBackBuffer;
     g_pSwapChain->GetBuffer(0, IID_PPV_ARGS(&pBackBuffer));
@@ -100,7 +111,6 @@ bool CreateDeviceD3D(HWND hWnd) {
     D3D_FEATURE_LEVEL featureLevel;
     const D3D_FEATURE_LEVEL featureLevelArray[2] = { D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_0 };
     if (D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, featureLevelArray, 2, D3D11_SDK_VERSION, &sd, &g_pSwapChain, &g_pd3dDevice, &featureLevel, &g_pd3dDeviceContext) != S_OK) return false;
-    
     CreateRenderTarget();
     return true;
 }
@@ -127,11 +137,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
     RegisterClassExW(&wc);
     HWND hwnd = CreateWindowW(wc.lpszClassName, L"Wesoda Executor", WS_OVERLAPPEDWINDOW, 100, 100, 600, 500, nullptr, nullptr, wc.hInstance, nullptr);
 
-    if (!CreateDeviceD3D(hwnd)) {
-        CleanupDeviceD3D();
-        UnregisterClassW(wc.lpszClassName, wc.hInstance);
-        return 1;
-    }
+    if (!CreateDeviceD3D(hwnd)) { CleanupDeviceD3D(); UnregisterClassW(wc.lpszClassName, wc.hInstance); return 1; }
 
     ShowWindow(hwnd, SW_SHOWDEFAULT);
     UpdateWindow(hwnd);
@@ -157,31 +163,24 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
 
-        // --- GUI Layout ---
         ImGui::SetNextWindowPos(ImVec2(0, 0));
         ImGui::SetNextWindowSize(io.DisplaySize);
         ImGui::Begin("Wesoda", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
 
         ImGui::TextColored(ImVec4(0.0f, 0.6f, 1.0f, 1.0f), "WESODA EXECUTOR GUI");
         ImGui::Separator();
-
         ImGui::InputText("Process Name", processName, IM_ARRAYSIZE(processName));
         
-        if (ImGui::Button("Inject", ImVec2(100, 30))) {
-            InjectDLL();
-        }
+        if (ImGui::Button("Inject", ImVec2(100, 30))) { InjectDLL(); }
         
         ImGui::SameLine();
         if (isConnected) ImGui::TextColored(ImVec4(0, 1, 0, 1), "Status: Connected");
         else ImGui::TextColored(ImVec4(1, 0, 0, 1), "Status: Disconnected");
 
         ImGui::Separator();
-        
         ImGui::InputTextMultiline("##script", scriptBuffer, IM_ARRAYSIZE(scriptBuffer), ImVec2(-1, -40), ImGuiInputTextFlags_AllowTabInput);
         
-        if (ImGui::Button("Execute Script", ImVec2(-1, 30))) {
-            ExecuteScript();
-        }
+        if (ImGui::Button("Execute Script", ImVec2(-1, 30))) { ExecuteScript(); }
 
         ImGui::End();
 
