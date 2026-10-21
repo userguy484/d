@@ -12,50 +12,14 @@
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
 
-// --- VEH Globals ---
-std::vector<std::pair<uintptr_t, uintptr_t>> managed_pages;
-uintptr_t injected_dll_base = 0; // We need to know where our DLL lands
-
-// --- VEH Handler ---
-LONG CALLBACK veh_handler(EXCEPTION_POINTERS* pExceptionInfo) {
-    auto* er = pExceptionInfo->ExceptionRecord;
-    auto* ctx = pExceptionInfo->ContextRecord;
-
-    if (!er || !ctx) return EXCEPTION_CONTINUE_SEARCH;
-
-    // 0xC0000005 is ACCESS_VIOLATION
-    if (er->ExceptionCode != 0xC0000005) return EXCEPTION_CONTINUE_SEARCH;
-    // Check if it's an EXECUTE fault (8)
-    if (er->NumberParameters < 2 || er->ExceptionInformation[0] != 8) return EXCEPTION_CONTINUE_SEARCH;
-
-    uintptr_t fault_addr = (uintptr_t)er->ExceptionAddress;
-    if (ctx->Rip != fault_addr) return EXCEPTION_CONTINUE_SEARCH;
-
-    // Check if the fault address is inside Hyperion's encrypted pages
-    for (auto& page : managed_pages) {
-        if (fault_addr >= page.first && fault_addr <= page.second) {
-            // The page is encrypted. Hyperion's VEH usually decrypts it right before we get here.
-            // We fake a return address or patch the RIP to jump to our DLL.
-            // For this to work perfectly, you must find the exact trampoline offset.
-            
-            // Pseudo: Patch RIP to point to our injected payload entry point
-            // ctx->Rip = injected_dll_base + entry_point_offset;
-            return EXCEPTION_CONTINUE_EXECUTION;
-        }
-    }
-
-    return EXCEPTION_CONTINUE_SEARCH;
-}
-
-// --- Standard UI / Injection Globals ---
 static ID3D11Device*            g_pd3dDevice = nullptr;
 static ID3D11DeviceContext*     g_pd3dDeviceContext = nullptr;
 static IDXGISwapChain*          g_pSwapChain = nullptr;
 static ID3D11RenderTargetView*  g_mainRenderTargetView = nullptr;
 static bool                     g_Running = true;
 
-char processName[128] = "RobloxPlayerBeta.exe";
-char scriptBuffer[4096] = "print('Hello from VEH Executor!')";
+char processName[128] = "notepad.exe";
+char scriptBuffer[4096] = "print('Hello from ImGui Executor!')\nprint(5 + 5)";
 HANDLE hPipe = INVALID_HANDLE_VALUE;
 std::string tempDllPath = "";
 bool isConnected = false;
@@ -109,16 +73,27 @@ DWORD WINAPI PipeReadThread(LPVOID lpParam) {
 DWORD WINAPI InjectThread(LPVOID lpParam) {
     isInjecting = true;
     isConnected = false;
-    
-    // 1. Setup VEH
-    AddLog("[*] Registering VEH...\n");
-    PVOID veh_handle = AddVectoredExceptionHandler(1, veh_handler);
-    
-    // 2. Prep Payload
+    if (hPipe != INVALID_HANDLE_VALUE) { CloseHandle(hPipe); hPipe = INVALID_HANDLE_VALUE; }
+
+    AddLog("[*] Preparing injection...\n");
+
+    // Find current executor folder
+    char exePath[MAX_PATH];
+    GetModuleFileNameA(NULL, exePath, MAX_PATH);
+    std::string exeDir = exePath;
+    exeDir = exeDir.substr(0, exeDir.find_last_of("\\/"));
+
     char tempPath[MAX_PATH];
     GetTempPathA(MAX_PATH, tempPath);
-    tempDllPath = std::string(tempPath) + "wesoda_payload.dll";
-    CopyFileA("dd.dll", tempDllPath.c_str(), FALSE);
+    tempDllPath = std::string(tempPath) + "wesoda_" + std::to_string(GetTickCount()) + ".dll";
+    
+    // Copy from the executor folder to temp
+    std::string originalDll = exeDir + "\\dd.dll";
+    if (!CopyFileA(originalDll.c_str(), tempDllPath.c_str(), FALSE)) {
+        AddLog("[-] Failed to copy dd.dll to temp folder. Is it missing?\n");
+        isInjecting = false; return 0;
+    }
+    AddLog("[*] Payload dropped to temp folder.\n");
 
     DWORD pid = GetProcessId(std::string(processName));
     if (pid == 0) { AddLog("[-] Process not found!\n"); isInjecting = false; return 0; }
@@ -126,31 +101,23 @@ DWORD WINAPI InjectThread(LPVOID lpParam) {
     HANDLE hProc = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
     if (!hProc) { AddLog("[-] Failed to open process. Run as Admin!\n"); isInjecting = false; return 0; }
 
-    // 3. Allocate and write payload path
     void* alloc = VirtualAllocEx(hProc, nullptr, tempDllPath.length() + 1, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     WriteProcessMemory(hProc, alloc, tempDllPath.c_str(), tempDllPath.length() + 1, nullptr);
 
-    // 4. THE VEH TRICK (Simplified)
-    // Instead of CreateRemoteThread (which gets blocked), we find Hyperion's encrypted page
-    // and force Roblox to jump to it, triggering our VEH handler.
-    AddLog("[*] Triggering VEH Fault (Bypassing Hyperion)...\n");
-    
-    // In a real executor, you do AOB scanning here to find the Hyperion trampoline address.
-    // We'll simulate the remote thread for the sake of the GUI.
     HMODULE k32 = GetModuleHandleA("kernel32.dll");
     void* loadLib = GetProcAddress(k32, "LoadLibraryA");
     HANDLE hThread = CreateRemoteThread(hProc, nullptr, 0, (LPTHREAD_START_ROUTINE)loadLib, alloc, 0, nullptr);
     
     if (hThread == NULL) { 
-        AddLog("[-] Injection blocked by Hyperion!\n");
+        AddLog("[-] CreateRemoteThread failed!\n");
         CloseHandle(hProc); isInjecting = false; return 0; 
     }
     
     WaitForSingleObject(hThread, INFINITE);
     CloseHandle(hThread); CloseHandle(hProc);
-
-    // 5. Connect Pipe
+    
     AddLog("[*] Waiting for DLL to connect...\n");
+
     for (int i = 0; i < 20; i++) {
         hPipe = CreateFileA("\\\\.\\pipe\\WesodaPipe", GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
         if (hPipe != INVALID_HANDLE_VALUE) { isConnected = true; break; }
@@ -159,9 +126,9 @@ DWORD WINAPI InjectThread(LPVOID lpParam) {
     
     if (isConnected) {
         CreateThread(nullptr, 0, PipeReadThread, nullptr, 0, nullptr);
-        AddLog("[+] Connected! Executor is alive inside Roblox.\n");
+        AddLog("[+] Connected to DLL!\n");
     } else {
-        AddLog("[-] Pipe failed. Injection crashed or was blocked.\n");
+        AddLog("[-] DLL failed to create Named Pipe. Already injected?\n");
     }
     
     isInjecting = false;
@@ -175,7 +142,8 @@ DWORD WINAPI ExecuteThread(LPVOID lpParam) {
     }
     AddLog("[*] Sending script to DLL...\n");
     DWORD written;
-    WriteFile(hPipe, scriptBuffer, strlen(scriptBuffer), &written, NULL);
+    BOOL success = WriteFile(hPipe, scriptBuffer, strlen(scriptBuffer), &written, NULL);
+    if (!success) AddLog("[-] Failed to write to pipe. Connection broken.\n");
     return 0;
 }
 
@@ -213,6 +181,33 @@ LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     return DefWindowProcW(hWnd, msg, wParam, lParam);
 }
 
+// --- CLEANUP LOGIC: MOVES DLL BACK ---
+void CleanupTempDLL() {
+    if (tempDllPath.empty()) return;
+
+    // Get the executor's original folder
+    char exePath[MAX_PATH];
+    GetModuleFileNameA(NULL, exePath, MAX_PATH);
+    std::string exeDir = exePath;
+    exeDir = exeDir.substr(0, exeDir.find_last_of("\\/"));
+    std::string originalDllPath = exeDir + "\\dd.dll";
+
+    // 1. Try to move it back to the executor folder
+    // MOVEFILE_REPLACE_EXISTING overwrites the original dd.dll if it's there
+    if (MoveFileExA(tempDllPath.c_str(), originalDllPath.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+        // Successfully moved back!
+        return; 
+    }
+
+    // 2. If it fails (Error 32: File in use), it means the DLL is still inside Roblox/Notepad.
+    // We CANNOT move it. We rename it to .bak so Windows unlocks it from the path, 
+    // then schedule it to be deleted on your next PC restart.
+    std::string bakPath = tempDllPath + ".bak";
+    if (MoveFileA(tempDllPath.c_str(), bakPath.c_str())) {
+        MoveFileExA(bakPath.c_str(), NULL, MOVEFILE_DELAY_UNTIL_REBOOT);
+    }
+}
+
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
     WNDCLASSEXW wc = { sizeof(wc), CS_CLASSDC, WndProc, 0L, 0L, GetModuleHandle(nullptr), nullptr, nullptr, nullptr, nullptr, L"WesodaGUI", nullptr };
     RegisterClassExW(&wc);
@@ -241,7 +236,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
         ImGui::SetNextWindowSize(io.DisplaySize);
         ImGui::Begin("Wesoda", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
 
-        ImGui::TextColored(ImVec4(0.0f, 0.6f, 1.0f, 1.0f), "WESODA VEH EXECUTOR");
+        ImGui::TextColored(ImVec4(0.0f, 0.6f, 1.0f, 1.0f), "WESODA EXECUTOR GUI");
         ImGui::Separator();
         ImGui::InputText("Process Name", processName, IM_ARRAYSIZE(processName));
         
@@ -282,9 +277,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
         const float clear_color[4] = { 0.1f, 0.1f, 0.1f, 1.0f };
         g_pd3dDeviceContext->OMSetRenderTargets(1, &g_mainRenderTargetView, nullptr);
         g_pd3dDeviceContext->ClearRenderTargetView(g_mainRenderTargetView, clear_color);
-        ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+        g_implDX11_RenderDrawData(ImGui::GetDrawData());
         g_pSwapChain->Present(1, 0);
     }
+
+    // --- RUN CLEANUP ON EXIT ---
+    CleanupTempDLL();
 
     ImGui_ImplDX11_Shutdown(); ImGui_ImplWin32_Shutdown(); ImGui::DestroyContext();
     CleanupDeviceD3D(); DestroyWindow(hwnd); UnregisterClassW(wc.lpszClassName, wc.hInstance);
