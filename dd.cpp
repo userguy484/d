@@ -6,6 +6,7 @@
 #include "Luau/Compiler.h"
 
 HANDLE g_hPipe = INVALID_HANDLE_VALUE;
+bool g_Running = true;
 
 void SendToGUI(const std::string& msg) {
     if (g_hPipe != INVALID_HANDLE_VALUE) {
@@ -33,7 +34,7 @@ void RegisterAPI(lua_State* L) {
     lua_pushcfunction(L, custom_print, "print");
     lua_setglobal(L, "print");
     lua_newtable(L); 
-    lua_pushstring(L, "Fake Roblox Game Instance");
+    lua_pushstring(L, "Roblox Game Instance");
     lua_setfield(L, -2, "Name");
     lua_setglobal(L, "game");
 }
@@ -67,25 +68,31 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         if (GetLastError() == ERROR_ALREADY_EXISTS) return TRUE;
 
         CreateThread(nullptr, 0, [](LPVOID) -> DWORD {
-            g_hPipe = CreateNamedPipeA("\\\\.\\pipe\\WesodaPipe", PIPE_ACCESS_DUPLEX, PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT, 1, 8192, 8192, 0, NULL);
-            if (g_hPipe == INVALID_HANDLE_VALUE) return 0;
-
             lua_State* L = luaL_newstate();
             luaL_openlibs(L);
             RegisterAPI(L);
 
-            ConnectNamedPipe(g_hPipe, NULL);
-            SendToGUI("[+] Internal DLL Loaded Successfully!\n");
+            while (g_Running) {
+                // Create pipe and wait for GUI to connect
+                g_hPipe = CreateNamedPipeA("\\\\.\\pipe\\WesodaPipe", PIPE_ACCESS_DUPLEX, PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT, 1, 8192, 8192, 0, NULL);
+                if (g_hPipe == INVALID_HANDLE_VALUE) { Sleep(1000); continue; }
 
-            while (true) {
-                char buffer[8192];
-                DWORD bytesRead;
-                if (ReadFile(g_hPipe, buffer, sizeof(buffer) - 1, &bytesRead, NULL) && bytesRead > 0) {
-                    buffer[bytesRead] = '\0';
-                    ExecuteScript(L, std::string(buffer));
-                } else {
-                    break;
+                ConnectNamedPipe(g_hPipe, NULL);
+                SendToGUI("[+] Internal DLL Connected! Waiting for scripts...\n");
+
+                while (true) {
+                    char buffer[8192];
+                    DWORD bytesRead;
+                    // If GUI closes, ReadFile fails and we loop back to wait for a new connection
+                    if (ReadFile(g_hPipe, buffer, sizeof(buffer) - 1, &bytesRead, NULL) && bytesRead > 0) {
+                        buffer[bytesRead] = '\0';
+                        ExecuteScript(L, std::string(buffer));
+                    } else {
+                        break; 
+                    }
                 }
+                DisconnectNamedPipe(g_hPipe);
+                CloseHandle(g_hPipe);
             }
             return 0;
         }, nullptr, 0, nullptr);
