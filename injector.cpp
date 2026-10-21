@@ -4,7 +4,6 @@
 #include <tlhelp32.h>
 #include <string>
 #include <mutex>
-#include <fstream>
 #include "imgui.h"
 #include "backends/imgui_impl_win32.h"
 #include "backends/imgui_impl_dx11.h"
@@ -77,16 +76,13 @@ DWORD WINAPI InjectThread(LPVOID lpParam) {
 
     AddLog("[*] Preparing injection...\n");
 
-    // 1. Create temporary DLL path
     char tempPath[MAX_PATH];
     GetTempPathA(MAX_PATH, tempPath);
     tempDllPath = std::string(tempPath) + "wesoda_payload.dll";
     
-    // 2. Copy dd.dll to temp path
     if (!CopyFileA("dd.dll", tempDllPath.c_str(), FALSE)) {
         AddLog("[-] Failed to copy dd.dll to temp folder.\n");
-        isInjecting = false;
-        return 0;
+        isInjecting = false; return 0;
     }
     AddLog("[*] Payload dropped to temp folder.\n");
 
@@ -104,7 +100,7 @@ DWORD WINAPI InjectThread(LPVOID lpParam) {
     HANDLE hThread = CreateRemoteThread(hProc, nullptr, 0, (LPTHREAD_START_ROUTINE)loadLib, alloc, 0, nullptr);
     
     if (hThread == NULL) { 
-        AddLog("[-] CreateRemoteThread failed! Antivirus blocking?\n");
+        AddLog("[-] CreateRemoteThread failed!\n");
         CloseHandle(hProc); isInjecting = false; return 0; 
     }
     
@@ -126,9 +122,7 @@ DWORD WINAPI InjectThread(LPVOID lpParam) {
         AddLog("[-] DLL failed to create Named Pipe. Already injected?\n");
     }
     
-    // 3. Mark the temp file for deletion when process exits
     MoveFileExA(tempDllPath.c_str(), NULL, MOVEFILE_DELAY_UNTIL_REBOOT);
-    
     isInjecting = false;
     return 0;
 }
@@ -140,7 +134,10 @@ DWORD WINAPI ExecuteThread(LPVOID lpParam) {
     }
     AddLog("[*] Sending script to DLL...\n");
     DWORD written;
-    WriteFile(hPipe, scriptBuffer, strlen(scriptBuffer), &written, NULL);
+    BOOL success = WriteFile(hPipe, scriptBuffer, strlen(scriptBuffer), &written, NULL);
+    if (!success) {
+        AddLog("[-] Failed to write to pipe. Connection broken.\n");
+    }
     return 0;
 }
 
