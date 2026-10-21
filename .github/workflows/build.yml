@@ -22,7 +22,8 @@ jobs:
       shell: bash
       run: |
         cd luau
-        cmake -B build -DCMAKE_BUILD_TYPE=Release -DLUAU_BUILD_TESTS=OFF
+        # Force CMake to use the static runtime (/MT) for Luau
+        cmake -B build -DCMAKE_BUILD_TYPE=Release -DLUAU_BUILD_TESTS=OFF -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded"
         cmake --build build --config Release
         
     - name: Combine Libraries
