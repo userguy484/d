@@ -51,22 +51,24 @@ DWORD GetProcessId(const std::string& name) {
     CloseHandle(hSnapshot); return 0;
 }
 
-// Proper Windows Thread signature
 DWORD WINAPI PipeReadThread(LPVOID lpParam) {
     char buffer[4096];
     DWORD bytesRead;
     while (isConnected && hPipe != INVALID_HANDLE_VALUE) {
-        if (ReadFile(hPipe, buffer, sizeof(buffer) - 1, &bytesRead, NULL) && bytesRead > 0) {
+        BOOL success = ReadFile(hPipe, buffer, sizeof(buffer) - 1, &bytesRead, NULL);
+        if (success && bytesRead > 0) {
             buffer[bytesRead] = '\0';
             AddLog(buffer);
         } else {
-            Sleep(10);
+            // Stop the CPU spin if the pipe breaks
+            isConnected = false;
+            AddLog("[-] Connection lost to DLL.\n");
+            break;
         }
     }
     return 0;
 }
 
-// Proper Windows Thread signature
 DWORD WINAPI InjectThread(LPVOID lpParam) {
     isInjecting = true;
     isConnected = false;
@@ -89,10 +91,8 @@ DWORD WINAPI InjectThread(LPVOID lpParam) {
     HANDLE hThread = CreateRemoteThread(hProc, nullptr, 0, (LPTHREAD_START_ROUTINE)loadLib, alloc, 0, nullptr);
     
     if (hThread == NULL) { 
-        AddLog("[-] CreateRemoteThread failed! Antivirus blocking?\n");
-        CloseHandle(hProc);
-        isInjecting = false;
-        return 0; 
+        AddLog("[-] CreateRemoteThread failed!\n");
+        CloseHandle(hProc); isInjecting = false; return 0; 
     }
     
     WaitForSingleObject(hThread, INFINITE);
@@ -108,13 +108,12 @@ DWORD WINAPI InjectThread(LPVOID lpParam) {
         CreateThread(nullptr, 0, PipeReadThread, nullptr, 0, nullptr);
         AddLog("[+] Connected to DLL!\n");
     } else {
-        AddLog("[-] DLL failed to create Named Pipe. Check Exclusions.\n");
+        AddLog("[-] DLL failed to create Named Pipe. Already injected?\n");
     }
     isInjecting = false;
     return 0;
 }
 
-// Run the execute command in a thread so the GUI doesn't freeze on WriteFile
 DWORD WINAPI ExecuteThread(LPVOID lpParam) {
     if (!isConnected || hPipe == INVALID_HANDLE_VALUE) {
         AddLog("[-] Not connected! Inject first.\n");
