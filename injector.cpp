@@ -26,7 +26,6 @@ bool isInjecting = false;
 std::string outputLog = "";
 std::mutex outputMutex;
 
-// Helper function to safely add text without freezing
 void AddLog(const std::string& text) {
     std::lock_guard<std::mutex> lock(outputMutex);
     outputLog += text;
@@ -52,6 +51,7 @@ DWORD GetProcessId(const std::string& name) {
     CloseHandle(hSnapshot); return 0;
 }
 
+// Proper Windows Thread signature
 DWORD WINAPI PipeReadThread(LPVOID lpParam) {
     char buffer[4096];
     DWORD bytesRead;
@@ -66,7 +66,8 @@ DWORD WINAPI PipeReadThread(LPVOID lpParam) {
     return 0;
 }
 
-void InjectThread() {
+// Proper Windows Thread signature
+DWORD WINAPI InjectThread(LPVOID lpParam) {
     isInjecting = true;
     isConnected = false;
     if (hPipe != INVALID_HANDLE_VALUE) { CloseHandle(hPipe); hPipe = INVALID_HANDLE_VALUE; }
@@ -74,18 +75,10 @@ void InjectThread() {
     AddLog("[*] Injecting...\n");
 
     DWORD pid = GetProcessId(std::string(processName));
-    if (pid == 0) { 
-        AddLog("[-] Process not found!\n");
-        isInjecting = false;
-        return; 
-    }
+    if (pid == 0) { AddLog("[-] Process not found!\n"); isInjecting = false; return 0; }
 
     HANDLE hProc = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
-    if (!hProc) { 
-        AddLog("[-] Failed to open process. Run as Admin!\n");
-        isInjecting = false;
-        return; 
-    }
+    if (!hProc) { AddLog("[-] Failed to open process. Run as Admin!\n"); isInjecting = false; return 0; }
 
     char fullPath[MAX_PATH]; GetFullPathNameA("dd.dll", MAX_PATH, fullPath, NULL);
     void* alloc = VirtualAllocEx(hProc, nullptr, strlen(fullPath) + 1, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
@@ -99,7 +92,7 @@ void InjectThread() {
         AddLog("[-] CreateRemoteThread failed! Antivirus blocking?\n");
         CloseHandle(hProc);
         isInjecting = false;
-        return; 
+        return 0; 
     }
     
     WaitForSingleObject(hThread, INFINITE);
@@ -118,15 +111,18 @@ void InjectThread() {
         AddLog("[-] DLL failed to create Named Pipe. Check Exclusions.\n");
     }
     isInjecting = false;
+    return 0;
 }
 
-void ExecuteScript() {
+// Run the execute command in a thread so the GUI doesn't freeze on WriteFile
+DWORD WINAPI ExecuteThread(LPVOID lpParam) {
     if (!isConnected || hPipe == INVALID_HANDLE_VALUE) {
         AddLog("[-] Not connected! Inject first.\n");
-        return;
+        return 0;
     }
     DWORD written;
     WriteFile(hPipe, scriptBuffer, strlen(scriptBuffer), &written, NULL);
+    return 0;
 }
 
 void CreateRenderTarget() {
@@ -199,7 +195,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
             ImGui::TextColored(ImVec4(1, 1, 0, 1), "Injecting...");
         } else {
             if (ImGui::Button("Inject", ImVec2(100, 30))) { 
-                CreateThread(nullptr, 0, (LPTHREAD_START_ROUTINE)InjectThread, nullptr, 0, nullptr); 
+                CreateThread(nullptr, 0, InjectThread, nullptr, 0, nullptr); 
             }
         }
         
@@ -211,7 +207,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
         ImGui::Text("Script:");
         ImGui::InputTextMultiline("##script", scriptBuffer, IM_ARRAYSIZE(scriptBuffer), ImVec2(-1, 150), ImGuiInputTextFlags_AllowTabInput);
         
-        if (ImGui::Button("Execute Script", ImVec2(-1, 30))) { ExecuteScript(); }
+        if (ImGui::Button("Execute Script", ImVec2(-1, 30))) { 
+            CreateThread(nullptr, 0, ExecuteThread, nullptr, 0, nullptr);
+        }
 
         ImGui::Separator();
         ImGui::Text("Output:");
