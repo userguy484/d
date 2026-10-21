@@ -3,7 +3,8 @@
 #include <dxgi.h>
 #include <tlhelp32.h>
 #include <string>
-#include <iostream>
+#include <vector>
+#include <mutex>
 #include "imgui.h"
 #include "backends/imgui_impl_win32.h"
 #include "backends/imgui_impl_dx11.h"
@@ -18,9 +19,12 @@ static ID3D11RenderTargetView*  g_mainRenderTargetView = nullptr;
 static bool                     g_Running = true;
 
 char processName[128] = "notepad.exe";
-char scriptBuffer[4096] = "print('Hello from ImGui Executor!')\nprint(game.Name)";
+char scriptBuffer[4096] = "print('Hello from ImGui Executor!')\nprint('Game Name: ' .. game.Name)";
 HANDLE hPipe = INVALID_HANDLE_VALUE;
 bool isConnected = false;
+
+std::string outputLog = "";
+std::mutex outputMutex;
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
@@ -42,51 +46,61 @@ DWORD GetProcessId(const std::string& name) {
     CloseHandle(hSnapshot); return 0;
 }
 
+DWORD WINAPI PipeReadThread(LPVOID lpParam) {
+    char buffer[4096];
+    DWORD bytesRead;
+    while (isConnected && hPipe != INVALID_HANDLE_VALUE) {
+        if (ReadFile(hPipe, buffer, sizeof(buffer) - 1, &bytesRead, NULL) && bytesRead > 0) {
+            buffer[bytesRead] = '\0';
+            std::lock_guard<std::mutex> lock(outputMutex);
+            outputLog += buffer;
+        } else {
+            Sleep(10);
+        }
+    }
+    return 0;
+}
+
 void InjectDLL() {
-    isConnected = false; // Reset status on new inject
+    isConnected = false;
     if (hPipe != INVALID_HANDLE_VALUE) { CloseHandle(hPipe); hPipe = INVALID_HANDLE_VALUE; }
 
     DWORD pid = GetProcessId(std::string(processName));
-    if (pid == 0) { MessageBoxA(NULL, "Process not found! Make sure it is open.", "Error", MB_ICONERROR); return; }
+    if (pid == 0) { MessageBoxA(NULL, "Process not found!", "Error", MB_ICONERROR); return; }
 
     HANDLE hProc = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
-    if (!hProc) { MessageBoxA(NULL, "Failed to open process. Run as Administrator!", "Error", MB_ICONERROR); return; }
+    if (!hProc) { MessageBoxA(NULL, "Failed to open process. Run as Admin!", "Error", MB_ICONERROR); return; }
 
     char fullPath[MAX_PATH]; GetFullPathNameA("dd.dll", MAX_PATH, fullPath, NULL);
     void* alloc = VirtualAllocEx(hProc, nullptr, strlen(fullPath) + 1, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-    if (!alloc) { MessageBoxA(NULL, "VirtualAllocEx failed.", "Error", MB_ICONERROR); CloseHandle(hProc); return; }
-    
     WriteProcessMemory(hProc, alloc, fullPath, strlen(fullPath) + 1, nullptr);
 
     HMODULE k32 = GetModuleHandleA("kernel32.dll");
     void* loadLib = GetProcAddress(k32, "LoadLibraryA");
     HANDLE hThread = CreateRemoteThread(hProc, nullptr, 0, (LPTHREAD_START_ROUTINE)loadLib, alloc, 0, nullptr);
     
-    if (hThread == NULL) {
-        char err[256];
-        sprintf_s(err, "CreateRemoteThread failed! Error: %d", GetLastError());
-        MessageBoxA(NULL, err, "Injection Failed", MB_ICONERROR);
-        CloseHandle(hProc);
-        return;
-    }
+    if (hThread == NULL) { CloseHandle(hProc); return; }
     
     WaitForSingleObject(hThread, INFINITE);
     CloseHandle(hThread); CloseHandle(hProc);
 
-    // Connect Pipe
     for (int i = 0; i < 20; i++) {
         hPipe = CreateFileA("\\\\.\\pipe\\WesodaPipe", GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
         if (hPipe != INVALID_HANDLE_VALUE) { isConnected = true; break; }
         Sleep(100);
     }
-    if (!isConnected) MessageBoxA(NULL, "DLL failed to create Named Pipe. Is the DLL missing dependencies?", "Error", MB_ICONERROR);
+    
+    if (isConnected) {
+        CreateThread(nullptr, 0, PipeReadThread, nullptr, 0, nullptr);
+        std::lock_guard<std::mutex> lock(outputMutex);
+        outputLog = "[+] Connected to DLL!\n";
+    } else {
+        MessageBoxA(NULL, "DLL failed to create Named Pipe.", "Error", MB_ICONERROR);
+    }
 }
 
 void ExecuteScript() {
-    if (!isConnected || hPipe == INVALID_HANDLE_VALUE) {
-        MessageBoxA(NULL, "Not connected! Click Inject first.", "Error", MB_ICONERROR);
-        return;
-    }
+    if (!isConnected || hPipe == INVALID_HANDLE_VALUE) return;
     DWORD written;
     WriteFile(hPipe, scriptBuffer, strlen(scriptBuffer), &written, NULL);
 }
@@ -100,19 +114,14 @@ void CreateRenderTarget() {
 
 bool CreateDeviceD3D(HWND hWnd) {
     DXGI_SWAP_CHAIN_DESC sd = {};
-    sd.BufferCount = 2;
-    sd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-    sd.OutputWindow = hWnd;
-    sd.SampleDesc.Count = 1;
-    sd.Windowed = TRUE;
-    sd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+    sd.BufferCount = 2; sd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT; sd.OutputWindow = hWnd;
+    sd.SampleDesc.Count = 1; sd.Windowed = TRUE; sd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
 
     D3D_FEATURE_LEVEL featureLevel;
     const D3D_FEATURE_LEVEL featureLevelArray[2] = { D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_0 };
     if (D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, featureLevelArray, 2, D3D11_SDK_VERSION, &sd, &g_pSwapChain, &g_pd3dDevice, &featureLevel, &g_pd3dDeviceContext) != S_OK) return false;
-    CreateRenderTarget();
-    return true;
+    CreateRenderTarget(); return true;
 }
 
 LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -125,9 +134,7 @@ LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             CreateRenderTarget();
         }
         return 0;
-    case WM_DESTROY:
-        PostQuitMessage(0);
-        return 0;
+    case WM_DESTROY: PostQuitMessage(0); return 0;
     }
     return DefWindowProcW(hWnd, msg, wParam, lParam);
 }
@@ -135,33 +142,26 @@ LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
     WNDCLASSEXW wc = { sizeof(wc), CS_CLASSDC, WndProc, 0L, 0L, GetModuleHandle(nullptr), nullptr, nullptr, nullptr, nullptr, L"WesodaGUI", nullptr };
     RegisterClassExW(&wc);
-    HWND hwnd = CreateWindowW(wc.lpszClassName, L"Wesoda Executor", WS_OVERLAPPEDWINDOW, 100, 100, 600, 500, nullptr, nullptr, wc.hInstance, nullptr);
+    HWND hwnd = CreateWindowW(wc.lpszClassName, L"Wesoda Executor", WS_OVERLAPPEDWINDOW, 100, 100, 700, 600, nullptr, nullptr, wc.hInstance, nullptr);
 
     if (!CreateDeviceD3D(hwnd)) { CleanupDeviceD3D(); UnregisterClassW(wc.lpszClassName, wc.hInstance); return 1; }
 
-    ShowWindow(hwnd, SW_SHOWDEFAULT);
-    UpdateWindow(hwnd);
+    ShowWindow(hwnd, SW_SHOWDEFAULT); UpdateWindow(hwnd);
 
-    IMGUI_CHECKVERSION();
-    ImGui::CreateContext();
-    ImGuiIO& io = ImGui::GetIO(); (void)io;
-    ImGui::StyleColorsDark();
+    IMGUI_CHECKVERSION(); ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO(); (void)io; ImGui::StyleColorsDark();
 
-    ImGui_ImplWin32_Init(hwnd);
-    ImGui_ImplDX11_Init(g_pd3dDevice, g_pd3dDeviceContext);
+    ImGui_ImplWin32_Init(hwnd); ImGui_ImplDX11_Init(g_pd3dDevice, g_pd3dDeviceContext);
 
     MSG msg;
     while (g_Running) {
         while (PeekMessage(&msg, nullptr, 0U, 0U, PM_REMOVE)) {
-            TranslateMessage(&msg);
-            DispatchMessage(&msg);
+            TranslateMessage(&msg); DispatchMessage(&msg);
             if (msg.message == WM_QUIT) g_Running = false;
         }
         if (!g_Running) break;
 
-        ImGui_ImplDX11_NewFrame();
-        ImGui_ImplWin32_NewFrame();
-        ImGui::NewFrame();
+        ImGui_ImplDX11_NewFrame(); ImGui_ImplWin32_NewFrame(); ImGui::NewFrame();
 
         ImGui::SetNextWindowPos(ImVec2(0, 0));
         ImGui::SetNextWindowSize(io.DisplaySize);
@@ -172,15 +172,22 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
         ImGui::InputText("Process Name", processName, IM_ARRAYSIZE(processName));
         
         if (ImGui::Button("Inject", ImVec2(100, 30))) { InjectDLL(); }
-        
         ImGui::SameLine();
         if (isConnected) ImGui::TextColored(ImVec4(0, 1, 0, 1), "Status: Connected");
         else ImGui::TextColored(ImVec4(1, 0, 0, 1), "Status: Disconnected");
 
         ImGui::Separator();
-        ImGui::InputTextMultiline("##script", scriptBuffer, IM_ARRAYSIZE(scriptBuffer), ImVec2(-1, -40), ImGuiInputTextFlags_AllowTabInput);
+        ImGui::Text("Script:");
+        ImGui::InputTextMultiline("##script", scriptBuffer, IM_ARRAYSIZE(scriptBuffer), ImVec2(-1, 150), ImGuiInputTextFlags_AllowTabInput);
         
         if (ImGui::Button("Execute Script", ImVec2(-1, 30))) { ExecuteScript(); }
+
+        ImGui::Separator();
+        ImGui::Text("Output:");
+        
+        // Output Box (Read-Only)
+        std::lock_guard<std::mutex> lock(outputMutex);
+        ImGui::InputTextMultiline("##output", (char*)outputLog.c_str(), outputLog.length() + 1, ImVec2(-1, -1), ImGuiInputTextFlags_ReadOnly);
 
         ImGui::End();
 
@@ -192,12 +199,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
         g_pSwapChain->Present(1, 0);
     }
 
-    ImGui_ImplDX11_Shutdown();
-    ImGui_ImplWin32_Shutdown();
-    ImGui::DestroyContext();
-    CleanupDeviceD3D();
-    DestroyWindow(hwnd);
-    UnregisterClassW(wc.lpszClassName, wc.hInstance);
-
+    ImGui_ImplDX11_Shutdown(); ImGui_ImplWin32_Shutdown(); ImGui::DestroyContext();
+    CleanupDeviceD3D(); DestroyWindow(hwnd); UnregisterClassW(wc.lpszClassName, wc.hInstance);
     return 0;
 }
