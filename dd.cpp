@@ -5,17 +5,33 @@
 #include "lualib.h"
 #include "Luau/Compiler.h"
 
-static int custom_httpget(lua_State* L) {
-    const char* url = lua_tostring(L, 1);
-    lua_pushstring(L, url ? url : "unknown");
-    return 1; 
+HANDLE g_hPipe = INVALID_HANDLE_VALUE;
+
+// Custom print that sends output to the GUI pipe
+static int custom_print(lua_State* L) {
+    int n = lua_gettop(L);
+    std::string out = "";
+    for (int i = 1; i <= n; i++) {
+        if (lua_isstring(L, i)) {
+            out += lua_tostring(L, i);
+            if (i < n) out += " ";
+        }
+    }
+    out += "\n";
+
+    if (g_hPipe != INVALID_HANDLE_VALUE) {
+        DWORD written;
+        WriteFile(g_hPipe, out.c_str(), out.length(), &written, NULL);
+    }
+    return 0;
 }
 
 void RegisterAPI(lua_State* L) {
-    lua_pushcfunction(L, custom_httpget, "HttpGet");
-    lua_setglobal(L, "HttpGet");
+    lua_pushcfunction(L, custom_print, "print");
+    lua_setglobal(L, "print");
+
     lua_newtable(L); 
-    lua_pushstring(L, "Roblox Game Instance");
+    lua_pushstring(L, "Fake Roblox Game Instance");
     lua_setfield(L, -2, "Name");
     lua_setglobal(L, "game");
 }
@@ -36,17 +52,17 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
             lua_State* L = luaL_newstate();
             luaL_openlibs(L);
 
-            HANDLE hPipe = CreateNamedPipeA("\\\\.\\pipe\\WesodaPipe", PIPE_ACCESS_DUPLEX, PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT, 1, 8192, 8192, 0, NULL);
+            g_hPipe = CreateNamedPipeA("\\\\.\\pipe\\WesodaPipe", PIPE_ACCESS_DUPLEX, PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT, 1, 8192, 8192, 0, NULL);
             
             while (true) {
-                ConnectNamedPipe(hPipe, NULL);
+                ConnectNamedPipe(g_hPipe, NULL);
                 char buffer[8192];
                 DWORD bytesRead;
-                if (ReadFile(hPipe, buffer, sizeof(buffer) - 1, &bytesRead, NULL)) {
+                if (ReadFile(g_hPipe, buffer, sizeof(buffer) - 1, &bytesRead, NULL)) {
                     buffer[bytesRead] = '\0';
                     ExecuteScript(L, std::string(buffer));
                 }
-                DisconnectNamedPipe(hPipe);
+                DisconnectNamedPipe(g_hPipe);
             }
             return 0;
         }, nullptr, 0, nullptr);
