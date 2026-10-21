@@ -21,7 +21,7 @@ static int custom_print(lua_State* L) {
     if (g_hPipe != INVALID_HANDLE_VALUE) {
         DWORD written;
         WriteFile(g_hPipe, out.c_str(), out.length(), &written, NULL);
-        FlushFileBuffers(g_hPipe); // Forces the text to send immediately
+        FlushFileBuffers(g_hPipe);
     }
     return 0;
 }
@@ -29,7 +29,6 @@ static int custom_print(lua_State* L) {
 void RegisterAPI(lua_State* L) {
     lua_pushcfunction(L, custom_print, "print");
     lua_setglobal(L, "print");
-
     lua_newtable(L); 
     lua_pushstring(L, "Fake Roblox Game Instance");
     lua_setfield(L, -2, "Name");
@@ -39,24 +38,52 @@ void RegisterAPI(lua_State* L) {
 void ExecuteScript(lua_State* L, const std::string& script) {
     std::string bytecode = Luau::compile(script);
     int status = luau_load(L, "ExecutorScript", bytecode.c_str(), bytecode.length(), 0);
-    if (status != LUA_OK) { lua_pop(L, 1); return; }
+    
+    if (status != LUA_OK) { 
+        const char* err = lua_tostring(L, -1);
+        if (err && g_hPipe != INVALID_HANDLE_VALUE) {
+            std::string errMsg = "[-] Compile Error: "; errMsg += err; errMsg += "\n";
+            DWORD written; WriteFile(g_hPipe, errMsg.c_str(), errMsg.length(), &written, NULL); FlushFileBuffers(g_hPipe);
+        }
+        lua_pop(L, 1); return; 
+    }
+    
     RegisterAPI(L);
-    lua_pcall(L, 0, LUA_MULTRET, 0);
+    status = lua_pcall(L, 0, LUA_MULTRET, 0);
+    if (status != LUA_OK) {
+        const char* err = lua_tostring(L, -1);
+        if (err && g_hPipe != INVALID_HANDLE_VALUE) {
+            std::string errMsg = "[-] Runtime Error: "; errMsg += err; errMsg += "\n";
+            DWORD written; WriteFile(g_hPipe, errMsg.c_str(), errMsg.length(), &written, NULL); FlushFileBuffers(g_hPipe);
+        }
+        lua_pop(L, 1);
+    }
 }
 
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved) {
     switch (ul_reason_for_call) {
     case DLL_PROCESS_ATTACH:
         DisableThreadLibraryCalls(hModule);
+        
+        // Mutex to prevent double injection
+        HANDLE hMutex = CreateMutexA(NULL, FALSE, "WesodaDLLMutex");
+        if (GetLastError() == ERROR_ALREADY_EXISTS) return TRUE; // Already injected, exit!
+
         CreateThread(nullptr, 0, [](LPVOID) -> DWORD {
-            // Try to create the pipe. If it fails, it means another DLL is already running.
             g_hPipe = CreateNamedPipeA("\\\\.\\pipe\\WesodaPipe", PIPE_ACCESS_DUPLEX, PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT, 1, 8192, 8192, 0, NULL);
-            if (g_hPipe == INVALID_HANDLE_VALUE) return 0; // Exit thread if ghost DLL
+            if (g_hPipe == INVALID_HANDLE_VALUE) return 0;
 
             lua_State* L = luaL_newstate();
             luaL_openlibs(L);
+            RegisterAPI(L);
 
             ConnectNamedPipe(g_hPipe, NULL);
+            
+            const char* boot = "[+] Internal DLL Loaded Successfully!\n";
+            DWORD written;
+            WriteFile(g_hPipe, boot, strlen(boot), &written, NULL);
+            FlushFileBuffers(g_hPipe);
+
             while (true) {
                 char buffer[8192];
                 DWORD bytesRead;
@@ -64,7 +91,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
                     buffer[bytesRead] = '\0';
                     ExecuteScript(L, std::string(buffer));
                 } else {
-                    break; // Pipe disconnected
+                    break;
                 }
             }
             return 0;
