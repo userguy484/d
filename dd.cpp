@@ -7,7 +7,6 @@
 
 HANDLE g_hPipe = INVALID_HANDLE_VALUE;
 
-// Custom print that sends output to the GUI pipe
 static int custom_print(lua_State* L) {
     int n = lua_gettop(L);
     std::string out = "";
@@ -54,15 +53,17 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 
             g_hPipe = CreateNamedPipeA("\\\\.\\pipe\\WesodaPipe", PIPE_ACCESS_DUPLEX, PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT, 1, 8192, 8192, 0, NULL);
             
-            while (true) {
+            if (g_hPipe != INVALID_HANDLE_VALUE) {
                 ConnectNamedPipe(g_hPipe, NULL);
-                char buffer[8192];
-                DWORD bytesRead;
-                if (ReadFile(g_hPipe, buffer, sizeof(buffer) - 1, &bytesRead, NULL)) {
-                    buffer[bytesRead] = '\0';
-                    ExecuteScript(L, std::string(buffer));
+                while (true) {
+                    char buffer[8192];
+                    DWORD bytesRead;
+                    // ReadFile will block and wait for a new script instead of disconnecting
+                    if (ReadFile(g_hPipe, buffer, sizeof(buffer) - 1, &bytesRead, NULL) && bytesRead > 0) {
+                        buffer[bytesRead] = '\0';
+                        ExecuteScript(L, std::string(buffer));
+                    }
                 }
-                DisconnectNamedPipe(g_hPipe);
             }
             return 0;
         }, nullptr, 0, nullptr);
