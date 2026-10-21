@@ -4,6 +4,7 @@
 #include <tlhelp32.h>
 #include <string>
 #include <mutex>
+#include <fstream>
 #include "imgui.h"
 #include "backends/imgui_impl_win32.h"
 #include "backends/imgui_impl_dx11.h"
@@ -20,6 +21,7 @@ static bool                     g_Running = true;
 char processName[128] = "notepad.exe";
 char scriptBuffer[4096] = "print('Hello from ImGui Executor!')\nprint('Game Name: ' .. game.Name)";
 HANDLE hPipe = INVALID_HANDLE_VALUE;
+std::string tempDllPath = "";
 bool isConnected = false;
 bool isInjecting = false;
 
@@ -60,7 +62,6 @@ DWORD WINAPI PipeReadThread(LPVOID lpParam) {
             buffer[bytesRead] = '\0';
             AddLog(buffer);
         } else {
-            // Stop the CPU spin if the pipe breaks
             isConnected = false;
             AddLog("[-] Connection lost to DLL.\n");
             break;
@@ -74,7 +75,20 @@ DWORD WINAPI InjectThread(LPVOID lpParam) {
     isConnected = false;
     if (hPipe != INVALID_HANDLE_VALUE) { CloseHandle(hPipe); hPipe = INVALID_HANDLE_VALUE; }
 
-    AddLog("[*] Injecting...\n");
+    AddLog("[*] Preparing injection...\n");
+
+    // 1. Create temporary DLL path
+    char tempPath[MAX_PATH];
+    GetTempPathA(MAX_PATH, tempPath);
+    tempDllPath = std::string(tempPath) + "wesoda_payload.dll";
+    
+    // 2. Copy dd.dll to temp path
+    if (!CopyFileA("dd.dll", tempDllPath.c_str(), FALSE)) {
+        AddLog("[-] Failed to copy dd.dll to temp folder.\n");
+        isInjecting = false;
+        return 0;
+    }
+    AddLog("[*] Payload dropped to temp folder.\n");
 
     DWORD pid = GetProcessId(std::string(processName));
     if (pid == 0) { AddLog("[-] Process not found!\n"); isInjecting = false; return 0; }
@@ -82,21 +96,22 @@ DWORD WINAPI InjectThread(LPVOID lpParam) {
     HANDLE hProc = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
     if (!hProc) { AddLog("[-] Failed to open process. Run as Admin!\n"); isInjecting = false; return 0; }
 
-    char fullPath[MAX_PATH]; GetFullPathNameA("dd.dll", MAX_PATH, fullPath, NULL);
-    void* alloc = VirtualAllocEx(hProc, nullptr, strlen(fullPath) + 1, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-    WriteProcessMemory(hProc, alloc, fullPath, strlen(fullPath) + 1, nullptr);
+    void* alloc = VirtualAllocEx(hProc, nullptr, tempDllPath.length() + 1, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    WriteProcessMemory(hProc, alloc, tempDllPath.c_str(), tempDllPath.length() + 1, nullptr);
 
     HMODULE k32 = GetModuleHandleA("kernel32.dll");
     void* loadLib = GetProcAddress(k32, "LoadLibraryA");
     HANDLE hThread = CreateRemoteThread(hProc, nullptr, 0, (LPTHREAD_START_ROUTINE)loadLib, alloc, 0, nullptr);
     
     if (hThread == NULL) { 
-        AddLog("[-] CreateRemoteThread failed!\n");
+        AddLog("[-] CreateRemoteThread failed! Antivirus blocking?\n");
         CloseHandle(hProc); isInjecting = false; return 0; 
     }
     
     WaitForSingleObject(hThread, INFINITE);
     CloseHandle(hThread); CloseHandle(hProc);
+    
+    AddLog("[*] Waiting for DLL to connect...\n");
 
     for (int i = 0; i < 20; i++) {
         hPipe = CreateFileA("\\\\.\\pipe\\WesodaPipe", GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
@@ -110,6 +125,10 @@ DWORD WINAPI InjectThread(LPVOID lpParam) {
     } else {
         AddLog("[-] DLL failed to create Named Pipe. Already injected?\n");
     }
+    
+    // 3. Mark the temp file for deletion when process exits
+    MoveFileExA(tempDllPath.c_str(), NULL, MOVEFILE_DELAY_UNTIL_REBOOT);
+    
     isInjecting = false;
     return 0;
 }
@@ -119,6 +138,7 @@ DWORD WINAPI ExecuteThread(LPVOID lpParam) {
         AddLog("[-] Not connected! Inject first.\n");
         return 0;
     }
+    AddLog("[*] Sending script to DLL...\n");
     DWORD written;
     WriteFile(hPipe, scriptBuffer, strlen(scriptBuffer), &written, NULL);
     return 0;
