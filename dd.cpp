@@ -21,6 +21,7 @@ static int custom_print(lua_State* L) {
     if (g_hPipe != INVALID_HANDLE_VALUE) {
         DWORD written;
         WriteFile(g_hPipe, out.c_str(), out.length(), &written, NULL);
+        FlushFileBuffers(g_hPipe); // Forces the text to send immediately
     }
     return 0;
 }
@@ -48,21 +49,22 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
     case DLL_PROCESS_ATTACH:
         DisableThreadLibraryCalls(hModule);
         CreateThread(nullptr, 0, [](LPVOID) -> DWORD {
+            // Try to create the pipe. If it fails, it means another DLL is already running.
+            g_hPipe = CreateNamedPipeA("\\\\.\\pipe\\WesodaPipe", PIPE_ACCESS_DUPLEX, PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT, 1, 8192, 8192, 0, NULL);
+            if (g_hPipe == INVALID_HANDLE_VALUE) return 0; // Exit thread if ghost DLL
+
             lua_State* L = luaL_newstate();
             luaL_openlibs(L);
 
-            g_hPipe = CreateNamedPipeA("\\\\.\\pipe\\WesodaPipe", PIPE_ACCESS_DUPLEX, PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT, 1, 8192, 8192, 0, NULL);
-            
-            if (g_hPipe != INVALID_HANDLE_VALUE) {
-                ConnectNamedPipe(g_hPipe, NULL);
-                while (true) {
-                    char buffer[8192];
-                    DWORD bytesRead;
-                    // ReadFile will block and wait for a new script instead of disconnecting
-                    if (ReadFile(g_hPipe, buffer, sizeof(buffer) - 1, &bytesRead, NULL) && bytesRead > 0) {
-                        buffer[bytesRead] = '\0';
-                        ExecuteScript(L, std::string(buffer));
-                    }
+            ConnectNamedPipe(g_hPipe, NULL);
+            while (true) {
+                char buffer[8192];
+                DWORD bytesRead;
+                if (ReadFile(g_hPipe, buffer, sizeof(buffer) - 1, &bytesRead, NULL) && bytesRead > 0) {
+                    buffer[bytesRead] = '\0';
+                    ExecuteScript(L, std::string(buffer));
+                } else {
+                    break; // Pipe disconnected
                 }
             }
             return 0;
