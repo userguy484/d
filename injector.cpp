@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 #include <mutex>
+#include <thread>
 #include "imgui.h"
 #include "backends/imgui_impl_win32.h"
 #include "backends/imgui_impl_dx11.h"
@@ -22,6 +23,7 @@ char processName[128] = "notepad.exe";
 char scriptBuffer[4096] = "print('Hello from ImGui Executor!')\nprint('Game Name: ' .. game.Name)";
 HANDLE hPipe = INVALID_HANDLE_VALUE;
 bool isConnected = false;
+bool isInjecting = false;
 
 std::string outputLog = "";
 std::mutex outputMutex;
@@ -50,6 +52,7 @@ DWORD WINAPI PipeReadThread(LPVOID lpParam) {
     char buffer[4096];
     DWORD bytesRead;
     while (isConnected && hPipe != INVALID_HANDLE_VALUE) {
+        // ReadFile blocks until data is received
         if (ReadFile(hPipe, buffer, sizeof(buffer) - 1, &bytesRead, NULL) && bytesRead > 0) {
             buffer[bytesRead] = '\0';
             std::lock_guard<std::mutex> lock(outputMutex);
@@ -61,15 +64,27 @@ DWORD WINAPI PipeReadThread(LPVOID lpParam) {
     return 0;
 }
 
-void InjectDLL() {
+void InjectThread() {
+    isInjecting = true;
     isConnected = false;
     if (hPipe != INVALID_HANDLE_VALUE) { CloseHandle(hPipe); hPipe = INVALID_HANDLE_VALUE; }
 
+    std::lock_guard<std::mutex> lock(outputMutex);
+    outputLog = "[*] Injecting...\n";
+
     DWORD pid = GetProcessId(std::string(processName));
-    if (pid == 0) { MessageBoxA(NULL, "Process not found!", "Error", MB_ICONERROR); return; }
+    if (pid == 0) { 
+        outputLog += "[-] Process not found!\n";
+        isInjecting = false;
+        return; 
+    }
 
     HANDLE hProc = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
-    if (!hProc) { MessageBoxA(NULL, "Failed to open process. Run as Admin!", "Error", MB_ICONERROR); return; }
+    if (!hProc) { 
+        outputLog += "[-] Failed to open process. Run as Admin!\n";
+        isInjecting = false;
+        return; 
+    }
 
     char fullPath[MAX_PATH]; GetFullPathNameA("dd.dll", MAX_PATH, fullPath, NULL);
     void* alloc = VirtualAllocEx(hProc, nullptr, strlen(fullPath) + 1, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
@@ -79,7 +94,12 @@ void InjectDLL() {
     void* loadLib = GetProcAddress(k32, "LoadLibraryA");
     HANDLE hThread = CreateRemoteThread(hProc, nullptr, 0, (LPTHREAD_START_ROUTINE)loadLib, alloc, 0, nullptr);
     
-    if (hThread == NULL) { CloseHandle(hProc); return; }
+    if (hThread == NULL) { 
+        outputLog += "[-] CreateRemoteThread failed! Antivirus blocking?\n";
+        CloseHandle(hProc);
+        isInjecting = false;
+        return; 
+    }
     
     WaitForSingleObject(hThread, INFINITE);
     CloseHandle(hThread); CloseHandle(hProc);
@@ -92,15 +112,19 @@ void InjectDLL() {
     
     if (isConnected) {
         CreateThread(nullptr, 0, PipeReadThread, nullptr, 0, nullptr);
-        std::lock_guard<std::mutex> lock(outputMutex);
-        outputLog = "[+] Connected to DLL!\n";
+        outputLog += "[+] Connected to DLL!\n";
     } else {
-        MessageBoxA(NULL, "DLL failed to create Named Pipe.", "Error", MB_ICONERROR);
+        outputLog += "[-] DLL failed to create Named Pipe. Check Exclusions.\n";
     }
+    isInjecting = false;
 }
 
 void ExecuteScript() {
-    if (!isConnected || hPipe == INVALID_HANDLE_VALUE) return;
+    if (!isConnected || hPipe == INVALID_HANDLE_VALUE) {
+        std::lock_guard<std::mutex> lock(outputMutex);
+        outputLog += "[-] Not connected! Inject first.\n";
+        return;
+    }
     DWORD written;
     WriteFile(hPipe, scriptBuffer, strlen(scriptBuffer), &written, NULL);
 }
@@ -171,7 +195,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
         ImGui::Separator();
         ImGui::InputText("Process Name", processName, IM_ARRAYSIZE(processName));
         
-        if (ImGui::Button("Inject", ImVec2(100, 30))) { InjectDLL(); }
+        if (isInjecting) {
+            ImGui::TextColored(ImVec4(1, 1, 0, 1), "Injecting...");
+        } else {
+            if (ImGui::Button("Inject", ImVec2(100, 30))) { 
+                CreateThread(nullptr, 0, (LPTHREAD_START_ROUTINE)InjectThread, nullptr, 0, nullptr); 
+            }
+        }
+        
         ImGui::SameLine();
         if (isConnected) ImGui::TextColored(ImVec4(0, 1, 0, 1), "Status: Connected");
         else ImGui::TextColored(ImVec4(1, 0, 0, 1), "Status: Disconnected");
@@ -185,9 +216,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
         ImGui::Separator();
         ImGui::Text("Output:");
         
-        // Output Box (Read-Only)
-        std::lock_guard<std::mutex> lock(outputMutex);
-        ImGui::InputTextMultiline("##output", (char*)outputLog.c_str(), outputLog.length() + 1, ImVec2(-1, -1), ImGuiInputTextFlags_ReadOnly);
+        // Fixed Output Box that doesn't crash the GUI
+        ImGui::BeginChild("OutputBox", ImVec2(-1, -1), true);
+        {
+            std::lock_guard<std::mutex> lock(outputMutex);
+            ImGui::TextUnformatted(outputLog.c_str());
+            if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY()) ImGui::SetScrollHereY(1.0f);
+        }
+        ImGui::EndChild();
 
         ImGui::End();
 
