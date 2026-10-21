@@ -7,22 +7,25 @@
 
 HANDLE g_hPipe = INVALID_HANDLE_VALUE;
 
+void SendToGUI(const std::string& msg) {
+    if (g_hPipe != INVALID_HANDLE_VALUE) {
+        DWORD written;
+        WriteFile(g_hPipe, msg.c_str(), msg.length(), &written, NULL);
+        FlushFileBuffers(g_hPipe);
+    }
+}
+
 static int custom_print(lua_State* L) {
     int n = lua_gettop(L);
     std::string out = "";
     for (int i = 1; i <= n; i++) {
-        if (lua_isstring(L, i)) {
+        if (lua_isstring(L, i) || lua_isnumber(L, i)) {
             out += lua_tostring(L, i);
             if (i < n) out += " ";
         }
     }
     out += "\n";
-
-    if (g_hPipe != INVALID_HANDLE_VALUE) {
-        DWORD written;
-        WriteFile(g_hPipe, out.c_str(), out.length(), &written, NULL);
-        FlushFileBuffers(g_hPipe);
-    }
+    SendToGUI(out);
     return 0;
 }
 
@@ -41,10 +44,7 @@ void ExecuteScript(lua_State* L, const std::string& script) {
     
     if (status != LUA_OK) { 
         const char* err = lua_tostring(L, -1);
-        if (err && g_hPipe != INVALID_HANDLE_VALUE) {
-            std::string errMsg = "[-] Compile Error: "; errMsg += err; errMsg += "\n";
-            DWORD written; WriteFile(g_hPipe, errMsg.c_str(), errMsg.length(), &written, NULL); FlushFileBuffers(g_hPipe);
-        }
+        if (err) SendToGUI("[-] Compile Error: " + std::string(err) + "\n");
         lua_pop(L, 1); return; 
     }
     
@@ -52,11 +52,10 @@ void ExecuteScript(lua_State* L, const std::string& script) {
     status = lua_pcall(L, 0, LUA_MULTRET, 0);
     if (status != LUA_OK) {
         const char* err = lua_tostring(L, -1);
-        if (err && g_hPipe != INVALID_HANDLE_VALUE) {
-            std::string errMsg = "[-] Runtime Error: "; errMsg += err; errMsg += "\n";
-            DWORD written; WriteFile(g_hPipe, errMsg.c_str(), errMsg.length(), &written, NULL); FlushFileBuffers(g_hPipe);
-        }
+        if (err) SendToGUI("[-] Runtime Error: " + std::string(err) + "\n");
         lua_pop(L, 1);
+    } else {
+        SendToGUI("[+] Script executed successfully.\n");
     }
 }
 
@@ -64,10 +63,8 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
     switch (ul_reason_for_call) {
     case DLL_PROCESS_ATTACH:
         DisableThreadLibraryCalls(hModule);
-        
-        // Mutex to prevent double injection
         HANDLE hMutex = CreateMutexA(NULL, FALSE, "WesodaDLLMutex");
-        if (GetLastError() == ERROR_ALREADY_EXISTS) return TRUE; // Already injected, exit!
+        if (GetLastError() == ERROR_ALREADY_EXISTS) return TRUE;
 
         CreateThread(nullptr, 0, [](LPVOID) -> DWORD {
             g_hPipe = CreateNamedPipeA("\\\\.\\pipe\\WesodaPipe", PIPE_ACCESS_DUPLEX, PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT, 1, 8192, 8192, 0, NULL);
@@ -78,11 +75,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
             RegisterAPI(L);
 
             ConnectNamedPipe(g_hPipe, NULL);
-            
-            const char* boot = "[+] Internal DLL Loaded Successfully!\n";
-            DWORD written;
-            WriteFile(g_hPipe, boot, strlen(boot), &written, NULL);
-            FlushFileBuffers(g_hPipe);
+            SendToGUI("[+] Internal DLL Loaded Successfully!\n");
 
             while (true) {
                 char buffer[8192];
