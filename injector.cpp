@@ -3,9 +3,7 @@
 #include <dxgi.h>
 #include <tlhelp32.h>
 #include <string>
-#include <vector>
 #include <mutex>
-#include <thread>
 #include "imgui.h"
 #include "backends/imgui_impl_win32.h"
 #include "backends/imgui_impl_dx11.h"
@@ -27,6 +25,12 @@ bool isInjecting = false;
 
 std::string outputLog = "";
 std::mutex outputMutex;
+
+// Helper function to safely add text without freezing
+void AddLog(const std::string& text) {
+    std::lock_guard<std::mutex> lock(outputMutex);
+    outputLog += text;
+}
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
@@ -52,11 +56,9 @@ DWORD WINAPI PipeReadThread(LPVOID lpParam) {
     char buffer[4096];
     DWORD bytesRead;
     while (isConnected && hPipe != INVALID_HANDLE_VALUE) {
-        // ReadFile blocks until data is received
         if (ReadFile(hPipe, buffer, sizeof(buffer) - 1, &bytesRead, NULL) && bytesRead > 0) {
             buffer[bytesRead] = '\0';
-            std::lock_guard<std::mutex> lock(outputMutex);
-            outputLog += buffer;
+            AddLog(buffer);
         } else {
             Sleep(10);
         }
@@ -69,19 +71,18 @@ void InjectThread() {
     isConnected = false;
     if (hPipe != INVALID_HANDLE_VALUE) { CloseHandle(hPipe); hPipe = INVALID_HANDLE_VALUE; }
 
-    std::lock_guard<std::mutex> lock(outputMutex);
-    outputLog = "[*] Injecting...\n";
+    AddLog("[*] Injecting...\n");
 
     DWORD pid = GetProcessId(std::string(processName));
     if (pid == 0) { 
-        outputLog += "[-] Process not found!\n";
+        AddLog("[-] Process not found!\n");
         isInjecting = false;
         return; 
     }
 
     HANDLE hProc = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
     if (!hProc) { 
-        outputLog += "[-] Failed to open process. Run as Admin!\n";
+        AddLog("[-] Failed to open process. Run as Admin!\n");
         isInjecting = false;
         return; 
     }
@@ -95,7 +96,7 @@ void InjectThread() {
     HANDLE hThread = CreateRemoteThread(hProc, nullptr, 0, (LPTHREAD_START_ROUTINE)loadLib, alloc, 0, nullptr);
     
     if (hThread == NULL) { 
-        outputLog += "[-] CreateRemoteThread failed! Antivirus blocking?\n";
+        AddLog("[-] CreateRemoteThread failed! Antivirus blocking?\n");
         CloseHandle(hProc);
         isInjecting = false;
         return; 
@@ -112,17 +113,16 @@ void InjectThread() {
     
     if (isConnected) {
         CreateThread(nullptr, 0, PipeReadThread, nullptr, 0, nullptr);
-        outputLog += "[+] Connected to DLL!\n";
+        AddLog("[+] Connected to DLL!\n");
     } else {
-        outputLog += "[-] DLL failed to create Named Pipe. Check Exclusions.\n";
+        AddLog("[-] DLL failed to create Named Pipe. Check Exclusions.\n");
     }
     isInjecting = false;
 }
 
 void ExecuteScript() {
     if (!isConnected || hPipe == INVALID_HANDLE_VALUE) {
-        std::lock_guard<std::mutex> lock(outputMutex);
-        outputLog += "[-] Not connected! Inject first.\n";
+        AddLog("[-] Not connected! Inject first.\n");
         return;
     }
     DWORD written;
@@ -216,7 +216,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
         ImGui::Separator();
         ImGui::Text("Output:");
         
-        // Fixed Output Box that doesn't crash the GUI
         ImGui::BeginChild("OutputBox", ImVec2(-1, -1), true);
         {
             std::lock_guard<std::mutex> lock(outputMutex);
