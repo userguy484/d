@@ -1,18 +1,16 @@
 #include <windows.h>
-#include <iostream>
 #include <string>
 #include "lua.h"
 #include "lualib.h"
 #include "Luau/Compiler.h"
 
 HANDLE g_hPipe = INVALID_HANDLE_VALUE;
-bool g_Running = true;
 
 void SendToGUI(const std::string& msg) {
     if (g_hPipe != INVALID_HANDLE_VALUE) {
         DWORD written;
         WriteFile(g_hPipe, msg.c_str(), msg.length(), &written, NULL);
-        FlushFileBuffers(g_hPipe);
+        FlushFileBuffers(g_hPipe); // Forces text to update instantly
     }
 }
 
@@ -34,14 +32,14 @@ void RegisterAPI(lua_State* L) {
     lua_pushcfunction(L, custom_print, "print");
     lua_setglobal(L, "print");
     lua_newtable(L); 
-    lua_pushstring(L, "Roblox Game Instance");
+    lua_pushstring(L, "Fake Game");
     lua_setfield(L, -2, "Name");
     lua_setglobal(L, "game");
 }
 
 void ExecuteScript(lua_State* L, const std::string& script) {
     std::string bytecode = Luau::compile(script);
-    int status = luau_load(L, "ExecutorScript", bytecode.c_str(), bytecode.length(), 0);
+    int status = luau_load(L, "Executor", bytecode.c_str(), bytecode.length(), 0);
     
     if (status != LUA_OK) { 
         const char* err = lua_tostring(L, -1);
@@ -56,47 +54,46 @@ void ExecuteScript(lua_State* L, const std::string& script) {
         if (err) SendToGUI("[-] Runtime Error: " + std::string(err) + "\n");
         lua_pop(L, 1);
     } else {
-        SendToGUI("[+] Script executed successfully.\n");
+        SendToGUI("[+] Script executed.\n");
     }
 }
 
-BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved) {
-    switch (ul_reason_for_call) {
-    case DLL_PROCESS_ATTACH:
+BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
+    if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(hModule);
-        HANDLE hMutex = CreateMutexA(NULL, FALSE, "WesodaDLLMutex");
-        if (GetLastError() == ERROR_ALREADY_EXISTS) return TRUE;
+        
+        // MUTEX: Prevents injecting twice and crashing the game
+        HANDLE hMutex = CreateMutexA(NULL, FALSE, "WesodaCleanMutex");
+        if (GetLastError() == ERROR_ALREADY_EXISTS) return TRUE; 
 
         CreateThread(nullptr, 0, [](LPVOID) -> DWORD {
             lua_State* L = luaL_newstate();
             luaL_openlibs(L);
             RegisterAPI(L);
 
-            while (g_Running) {
-                // Create pipe and wait for GUI to connect
+            // Keep pipe open forever
+            while (true) {
                 g_hPipe = CreateNamedPipeA("\\\\.\\pipe\\WesodaPipe", PIPE_ACCESS_DUPLEX, PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT, 1, 8192, 8192, 0, NULL);
-                if (g_hPipe == INVALID_HANDLE_VALUE) { Sleep(1000); continue; }
+                if (g_hPipe != INVALID_HANDLE_VALUE) {
+                    ConnectNamedPipe(g_hPipe, NULL);
+                    SendToGUI("[+] DLL Loaded Successfully!\n");
 
-                ConnectNamedPipe(g_hPipe, NULL);
-                SendToGUI("[+] Internal DLL Connected! Waiting for scripts...\n");
-
-                while (true) {
-                    char buffer[8192];
-                    DWORD bytesRead;
-                    // If GUI closes, ReadFile fails and we loop back to wait for a new connection
-                    if (ReadFile(g_hPipe, buffer, sizeof(buffer) - 1, &bytesRead, NULL) && bytesRead > 0) {
-                        buffer[bytesRead] = '\0';
-                        ExecuteScript(L, std::string(buffer));
-                    } else {
-                        break; 
+                    while (true) {
+                        char buffer[8192];
+                        DWORD bytesRead;
+                        if (ReadFile(g_hPipe, buffer, sizeof(buffer) - 1, &bytesRead, NULL) && bytesRead > 0) {
+                            buffer[bytesRead] = '\0';
+                            ExecuteScript(L, std::string(buffer));
+                        } else {
+                            break; // If injector closes, wait for new connection
+                        }
                     }
+                    DisconnectNamedPipe(g_hPipe);
                 }
-                DisconnectNamedPipe(g_hPipe);
-                CloseHandle(g_hPipe);
+                Sleep(500);
             }
             return 0;
         }, nullptr, 0, nullptr);
-        break;
     }
     return TRUE;
 }
