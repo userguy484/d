@@ -4,6 +4,7 @@
 #include <tlhelp32.h>
 #include <string>
 #include <mutex>
+#include <fstream>
 #include <vector>
 #include "imgui.h"
 #include "backends/imgui_impl_win32.h"
@@ -20,15 +21,14 @@ static ID3D11RenderTargetView* g_mainRenderTargetView = nullptr;
 static bool g_Running = true;
 
 // --- Executor Globals ---
-char processName[128] = "RobloxPlayerBeta.exe";
-char scriptBuffer[4096] = "print('Hello from Clean Executor!')";
+char processName[128] = "notepad.exe";
+char scriptBuffer[4096] = "print('Manual Mapper works!')";
 HANDLE hPipe = INVALID_HANDLE_VALUE;
 bool isConnected = false;
 bool isInjecting = false;
 std::string outputLog = "";
 std::mutex outputMutex;
 
-// Safely add text to GUI
 void AddLog(const std::string& text) {
     std::lock_guard<std::mutex> lock(outputMutex);
     outputLog += text;
@@ -54,6 +54,52 @@ DWORD GetProcessId(const std::string& name) {
     CloseHandle(hSnapshot); return 0;
 }
 
+// --- MANUAL MAPPER LOGIC ---
+bool ManualMap(HANDLE hProc, const char* dllPath) {
+    std::ifstream file(dllPath, std::ios::binary | std::ios::ate);
+    if (!file.is_open()) return false;
+    
+    std::streamsize size = file.tellg();
+    file.seekg(0, std::ios::beg);
+    std::vector<char> buffer(size);
+    if (!file.read(buffer.data(), size)) return false;
+
+    PIMAGE_DOS_HEADER pDos = (PIMAGE_DOS_HEADER)buffer.data();
+    PIMAGE_NT_HEADERS pNt = (PIMAGE_NT_HEADERS)(buffer.data() + pDos->e_lfanew);
+
+    // 1. Allocate memory in target process
+    void* pTargetBase = VirtualAllocEx(hProc, nullptr, pNt->OptionalHeader.SizeOfImage, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!pTargetBase) return false;
+
+    // 2. Write Headers
+    WriteProcessMemory(hProc, pTargetBase, buffer.data(), pNt->OptionalHeader.SizeOfHeaders, nullptr);
+
+    // 3. Write Sections
+    PIMAGE_SECTION_HEADER pSection = IMAGE_FIRST_SECTION(pNt);
+    for (int i = 0; i < pNt->FileHeader.NumberOfSections; i++) {
+        void* pSectionDest = (void*)((uintptr_t)pTargetBase + pSection[i].VirtualAddress);
+        void* pSectionSrc = (void*)(buffer.data() + pSection[i].PointerToRawData);
+        WriteProcessMemory(hProc, pSectionDest, pSectionSrc, pSection[i].SizeOfRawData, nullptr);
+    }
+
+    // Note: A full manual mapper requires resolving the Import Address Table (IAT) and Relocations.
+    // For this example, we assume dd.dll has no external dependencies outside of kernel32/user32 which are already loaded.
+
+    // 4. Create Remote Thread to call DllMain
+    // Get the entry point
+    uintptr_t entryPoint = (uintptr_t)pTargetBase + pNt->OptionalHeader.AddressOfEntryPoint;
+    
+    // Create a thread that calls the entry point (DllMain) with DLL_PROCESS_ATTACH
+    HANDLE hThread = CreateRemoteThread(hProc, nullptr, 0, (LPTHREAD_START_ROUTINE)entryPoint, pTargetBase, 0, nullptr);
+    
+    if (hThread) {
+        WaitForSingleObject(hThread, INFINITE);
+        CloseHandle(hThread);
+        return true;
+    }
+    return false;
+}
+
 DWORD WINAPI PipeReadThread(LPVOID lpParam) {
     char buffer[4096];
     DWORD bytesRead;
@@ -75,17 +121,7 @@ DWORD WINAPI InjectThread(LPVOID lpParam) {
     isConnected = false;
     if (hPipe != INVALID_HANDLE_VALUE) { CloseHandle(hPipe); hPipe = INVALID_HANDLE_VALUE; }
 
-    AddLog("[*] Preparing injection...\n");
-
-    // Drop to temp folder
-    char tempPath[MAX_PATH];
-    GetTempPathA(MAX_PATH, tempPath);
-    std::string tempDllPath = std::string(tempPath) + "wesoda_" + std::to_string(GetTickCount()) + ".dll";
-    
-    if (!CopyFileA("dd.dll", tempDllPath.c_str(), FALSE)) {
-        AddLog("[-] Failed to find dd.dll in the current folder!\n");
-        isInjecting = false; return 0;
-    }
+    AddLog("[*] Reading dd.dll...\n");
 
     DWORD pid = GetProcessId(std::string(processName));
     if (pid == 0) { AddLog("[-] Process not found!\n"); isInjecting = false; return 0; }
@@ -93,24 +129,16 @@ DWORD WINAPI InjectThread(LPVOID lpParam) {
     HANDLE hProc = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
     if (!hProc) { AddLog("[-] Failed to open process. Run as Admin!\n"); isInjecting = false; return 0; }
 
-    void* alloc = VirtualAllocEx(hProc, nullptr, tempDllPath.length() + 1, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-    WriteProcessMemory(hProc, alloc, tempDllPath.c_str(), tempDllPath.length() + 1, nullptr);
-
-    HMODULE k32 = GetModuleHandleA("kernel32.dll");
-    void* loadLib = GetProcAddress(k32, "LoadLibraryA");
-    HANDLE hThread = CreateRemoteThread(hProc, nullptr, 0, (LPTHREAD_START_ROUTINE)loadLib, alloc, 0, nullptr);
-    
-    if (hThread == NULL) { 
-        AddLog("[-] CreateRemoteThread failed! Antivirus blocking?\n");
-        CloseHandle(hProc); isInjecting = false; return 0; 
+    AddLog("[*] Manually mapping DLL...\n");
+    if (ManualMap(hProc, "dd.dll")) {
+        AddLog("[+] Manual Map successful!\n");
+    } else {
+        AddLog("[-] Manual Map failed.\n");
+        CloseHandle(hProc); isInjecting = false; return 0;
     }
-    
-    WaitForSingleObject(hThread, INFINITE);
-    CloseHandle(hThread); CloseHandle(hProc);
-    
-    AddLog("[*] Waiting for DLL...\n");
+    CloseHandle(hProc);
 
-    // Wait for the pipe
+    AddLog("[*] Waiting for pipe...\n");
     for (int i = 0; i < 30; i++) {
         hPipe = CreateFileA("\\\\.\\pipe\\WesodaPipe", GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
         if (hPipe != INVALID_HANDLE_VALUE) { isConnected = true; break; }
@@ -121,11 +149,8 @@ DWORD WINAPI InjectThread(LPVOID lpParam) {
         CreateThread(nullptr, 0, PipeReadThread, nullptr, 0, nullptr);
         AddLog("[+] Connected to DLL!\n");
     } else {
-        AddLog("[-] Pipe failed. Already injected?\n");
+        AddLog("[-] Pipe failed. Ensure dd.dll is in the same folder.\n");
     }
-    
-    // Mark the temp file for deletion on reboot (safest way)
-    MoveFileExA(tempDllPath.c_str(), NULL, MOVEFILE_DELAY_UNTIL_REBOOT);
     
     isInjecting = false;
     return 0;
@@ -179,7 +204,7 @@ LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
     WNDCLASSEXW wc = { sizeof(wc), CS_CLASSDC, WndProc, 0L, 0L, GetModuleHandle(nullptr), nullptr, nullptr, nullptr, nullptr, L"WesodaGUI", nullptr };
     RegisterClassExW(&wc);
-    HWND hwnd = CreateWindowW(wc.lpszClassName, L"Clean Executor", WS_OVERLAPPEDWINDOW, 100, 100, 700, 600, nullptr, nullptr, wc.hInstance, nullptr);
+    HWND hwnd = CreateWindowW(wc.lpszClassName, L"Manual Mapper Executor", WS_OVERLAPPEDWINDOW, 100, 100, 700, 600, nullptr, nullptr, wc.hInstance, nullptr);
 
     if (!CreateDeviceD3D(hwnd)) { CleanupDeviceD3D(); UnregisterClassW(wc.lpszClassName, wc.hInstance); return 1; }
 
@@ -204,7 +229,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
         ImGui::SetNextWindowSize(io.DisplaySize);
         ImGui::Begin("Wesoda", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
 
-        ImGui::TextColored(ImVec4(0.0f, 0.6f, 1.0f, 1.0f), "CLEAN EXECUTOR");
+        ImGui::TextColored(ImVec4(0.0f, 0.6f, 1.0f, 1.0f), "MANUAL MAPPER EXECUTOR");
         ImGui::Separator();
         ImGui::InputText("Process Name", processName, IM_ARRAYSIZE(processName));
         
