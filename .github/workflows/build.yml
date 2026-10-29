@@ -1,11 +1,10 @@
-name: Build ImGui Executor
+name: Build Clean Executor
 
 on: [push, workflow_dispatch]
 
 jobs:
   build:
     runs-on: windows-latest
-    
     steps:
     - uses: actions/checkout@v4
     - uses: ilammy/msvc-dev-cmd@v1
@@ -22,25 +21,24 @@ jobs:
       shell: bash
       run: |
         cd luau
-        # Force CMake to use the static runtime (/MT) for Luau
         cmake -B build -DCMAKE_BUILD_TYPE=Release -DLUAU_BUILD_TESTS=OFF -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded"
         cmake --build build --config Release
         
-    - name: Combine Libraries
-      shell: cmd
+    - name: Combine Libraries (Fixes Linker Errors)
+      shell: pwsh
       run: |
-        mkdir libs
-        for /r luau %%f in (*.lib) do copy "%%f" libs\
+        New-Item -ItemType Directory -Force -Path libs
+        Get-ChildItem -Path luau -Filter *.lib -Recurse | Copy-Item -Destination libs
         cd libs
-        lib /OUT:LuauMonolith.lib *.lib
+        cmd /c "lib /OUT:LuauMonolith.lib *.lib"
         cd ..
-        
-    - name: Compile DLL
+
+    - name: Compile Internal DLL
       shell: cmd
       run: |
         cl /EHsc /O2 /MT /std:c++17 /LD dd.cpp /Fe:dd.dll /Iluau\VM\include /Iluau\Compiler\include /Iluau\Common\include /Iluau\Ast\include /Iluau\Config\include /link /LIBPATH:libs LuauMonolith.lib user32.lib
         
-    - name: Compile ImGui GUI EXE
+    - name: Compile External EXE
       shell: cmd
       run: |
         cl /EHsc /O2 /MT /std:c++17 injector.cpp imgui\imgui.cpp imgui\imgui_draw.cpp imgui\imgui_tables.cpp imgui\imgui_widgets.cpp imgui\backends\imgui_impl_win32.cpp imgui\backends\imgui_impl_dx11.cpp /Fe:injector.exe /Iimgui /Iimgui\backends /link user32.lib gdi32.lib d3d11.lib dxgi.lib dwmapi.lib
@@ -48,7 +46,7 @@ jobs:
     - name: Upload Artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: Wesoda-ImGui-Executor
+        name: Clean-Executor
         path: |
           dd.dll
           injector.exe
