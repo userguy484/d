@@ -12,22 +12,23 @@
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
 
-static ID3D11Device*            g_pd3dDevice = nullptr;
-static ID3D11DeviceContext*     g_pd3dDeviceContext = nullptr;
-static IDXGISwapChain*          g_pSwapChain = nullptr;
-static ID3D11RenderTargetView*  g_mainRenderTargetView = nullptr;
-static bool                     g_Running = true;
+// --- D3D11 Globals ---
+static ID3D11Device* g_pd3dDevice = nullptr;
+static ID3D11DeviceContext* g_pd3dDeviceContext = nullptr;
+static IDXGISwapChain* g_pSwapChain = nullptr;
+static ID3D11RenderTargetView* g_mainRenderTargetView = nullptr;
+static bool g_Running = true;
 
-char processName[128] = "notepad.exe";
-char scriptBuffer[4096] = "print('Hello from ImGui Executor!')\nprint(5 + 5)";
+// --- Executor Globals ---
+char processName[128] = "RobloxPlayerBeta.exe";
+char scriptBuffer[4096] = "print('Hello from Clean Executor!')";
 HANDLE hPipe = INVALID_HANDLE_VALUE;
-std::string tempDllPath = "";
 bool isConnected = false;
 bool isInjecting = false;
-
 std::string outputLog = "";
 std::mutex outputMutex;
 
+// Safely add text to GUI
 void AddLog(const std::string& text) {
     std::lock_guard<std::mutex> lock(outputMutex);
     outputLog += text;
@@ -57,13 +58,12 @@ DWORD WINAPI PipeReadThread(LPVOID lpParam) {
     char buffer[4096];
     DWORD bytesRead;
     while (isConnected && hPipe != INVALID_HANDLE_VALUE) {
-        BOOL success = ReadFile(hPipe, buffer, sizeof(buffer) - 1, &bytesRead, NULL);
-        if (success && bytesRead > 0) {
+        if (ReadFile(hPipe, buffer, sizeof(buffer) - 1, &bytesRead, NULL) && bytesRead > 0) {
             buffer[bytesRead] = '\0';
             AddLog(buffer);
         } else {
             isConnected = false;
-            AddLog("[-] Connection lost to DLL.\n");
+            AddLog("[-] Connection lost.\n");
             break;
         }
     }
@@ -77,21 +77,15 @@ DWORD WINAPI InjectThread(LPVOID lpParam) {
 
     AddLog("[*] Preparing injection...\n");
 
-    char exePath[MAX_PATH];
-    GetModuleFileNameA(NULL, exePath, MAX_PATH);
-    std::string exeDir = exePath;
-    exeDir = exeDir.substr(0, exeDir.find_last_of("\\/"));
-
+    // Drop to temp folder
     char tempPath[MAX_PATH];
     GetTempPathA(MAX_PATH, tempPath);
-    tempDllPath = std::string(tempPath) + "wesoda_" + std::to_string(GetTickCount()) + ".dll";
+    std::string tempDllPath = std::string(tempPath) + "wesoda_" + std::to_string(GetTickCount()) + ".dll";
     
-    std::string originalDll = exeDir + "\\dd.dll";
-    if (!CopyFileA(originalDll.c_str(), tempDllPath.c_str(), FALSE)) {
-        AddLog("[-] Failed to copy dd.dll to temp folder. Is it missing?\n");
+    if (!CopyFileA("dd.dll", tempDllPath.c_str(), FALSE)) {
+        AddLog("[-] Failed to find dd.dll in the current folder!\n");
         isInjecting = false; return 0;
     }
-    AddLog("[*] Payload dropped to temp folder.\n");
 
     DWORD pid = GetProcessId(std::string(processName));
     if (pid == 0) { AddLog("[-] Process not found!\n"); isInjecting = false; return 0; }
@@ -107,16 +101,17 @@ DWORD WINAPI InjectThread(LPVOID lpParam) {
     HANDLE hThread = CreateRemoteThread(hProc, nullptr, 0, (LPTHREAD_START_ROUTINE)loadLib, alloc, 0, nullptr);
     
     if (hThread == NULL) { 
-        AddLog("[-] CreateRemoteThread failed!\n");
+        AddLog("[-] CreateRemoteThread failed! Antivirus blocking?\n");
         CloseHandle(hProc); isInjecting = false; return 0; 
     }
     
     WaitForSingleObject(hThread, INFINITE);
     CloseHandle(hThread); CloseHandle(hProc);
     
-    AddLog("[*] Waiting for DLL to connect...\n");
+    AddLog("[*] Waiting for DLL...\n");
 
-    for (int i = 0; i < 20; i++) {
+    // Wait for the pipe
+    for (int i = 0; i < 30; i++) {
         hPipe = CreateFileA("\\\\.\\pipe\\WesodaPipe", GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
         if (hPipe != INVALID_HANDLE_VALUE) { isConnected = true; break; }
         Sleep(100);
@@ -126,8 +121,11 @@ DWORD WINAPI InjectThread(LPVOID lpParam) {
         CreateThread(nullptr, 0, PipeReadThread, nullptr, 0, nullptr);
         AddLog("[+] Connected to DLL!\n");
     } else {
-        AddLog("[-] DLL failed to create Named Pipe. Already injected?\n");
+        AddLog("[-] Pipe failed. Already injected?\n");
     }
+    
+    // Mark the temp file for deletion on reboot (safest way)
+    MoveFileExA(tempDllPath.c_str(), NULL, MOVEFILE_DELAY_UNTIL_REBOOT);
     
     isInjecting = false;
     return 0;
@@ -138,10 +136,9 @@ DWORD WINAPI ExecuteThread(LPVOID lpParam) {
         AddLog("[-] Not connected! Inject first.\n");
         return 0;
     }
-    AddLog("[*] Sending script to DLL...\n");
+    AddLog("[*] Sending script...\n");
     DWORD written;
-    BOOL success = WriteFile(hPipe, scriptBuffer, strlen(scriptBuffer), &written, NULL);
-    if (!success) AddLog("[-] Failed to write to pipe. Connection broken.\n");
+    WriteFile(hPipe, scriptBuffer, strlen(scriptBuffer), &written, NULL);
     return 0;
 }
 
@@ -179,29 +176,10 @@ LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     return DefWindowProcW(hWnd, msg, wParam, lParam);
 }
 
-void CleanupTempDLL() {
-    if (tempDllPath.empty()) return;
-
-    char exePath[MAX_PATH];
-    GetModuleFileNameA(NULL, exePath, MAX_PATH);
-    std::string exeDir = exePath;
-    exeDir = exeDir.substr(0, exeDir.find_last_of("\\/"));
-    std::string originalDllPath = exeDir + "\\dd.dll";
-
-    if (MoveFileExA(tempDllPath.c_str(), originalDllPath.c_str(), MOVEFILE_REPLACE_EXISTING)) {
-        return; 
-    }
-
-    std::string bakPath = tempDllPath + ".bak";
-    if (MoveFileA(tempDllPath.c_str(), bakPath.c_str())) {
-        MoveFileExA(bakPath.c_str(), NULL, MOVEFILE_DELAY_UNTIL_REBOOT);
-    }
-}
-
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
     WNDCLASSEXW wc = { sizeof(wc), CS_CLASSDC, WndProc, 0L, 0L, GetModuleHandle(nullptr), nullptr, nullptr, nullptr, nullptr, L"WesodaGUI", nullptr };
     RegisterClassExW(&wc);
-    HWND hwnd = CreateWindowW(wc.lpszClassName, L"Wesoda Executor", WS_OVERLAPPEDWINDOW, 100, 100, 700, 600, nullptr, nullptr, wc.hInstance, nullptr);
+    HWND hwnd = CreateWindowW(wc.lpszClassName, L"Clean Executor", WS_OVERLAPPEDWINDOW, 100, 100, 700, 600, nullptr, nullptr, wc.hInstance, nullptr);
 
     if (!CreateDeviceD3D(hwnd)) { CleanupDeviceD3D(); UnregisterClassW(wc.lpszClassName, wc.hInstance); return 1; }
 
@@ -226,7 +204,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
         ImGui::SetNextWindowSize(io.DisplaySize);
         ImGui::Begin("Wesoda", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
 
-        ImGui::TextColored(ImVec4(0.0f, 0.6f, 1.0f, 1.0f), "WESODA EXECUTOR GUI");
+        ImGui::TextColored(ImVec4(0.0f, 0.6f, 1.0f, 1.0f), "CLEAN EXECUTOR");
         ImGui::Separator();
         ImGui::InputText("Process Name", processName, IM_ARRAYSIZE(processName));
         
@@ -270,8 +248,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
         ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
         g_pSwapChain->Present(1, 0);
     }
-
-    CleanupTempDLL();
 
     ImGui_ImplDX11_Shutdown(); ImGui_ImplWin32_Shutdown(); ImGui::DestroyContext();
     CleanupDeviceD3D(); DestroyWindow(hwnd); UnregisterClassW(wc.lpszClassName, wc.hInstance);
